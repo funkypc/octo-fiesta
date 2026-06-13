@@ -19,7 +19,7 @@ Usage:
 import json
 import os
 import sys
-import argparse
+import tempfile
 from typing import Optional
 
 try:
@@ -29,105 +29,149 @@ except ImportError as e:
     sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# Auth / YTMusic instance
-# ---------------------------------------------------------------------------
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
 _ymusic: Optional[YTMusic] = None
+_headers_file: Optional[str] = None
 
 
-def _get_auth_from_env():
-    """Try to get auth from environment or command args.
-    Returns a tuple (auth, is_cookie) where auth is either a file path,
-    a dict, or None."""
-    # Try OAuth first
+def _get_auth_value():
+    """Get auth value from env vars or command args.
+    Returns the auth string (file path, JSON, or cookie string) or None."""
     oauth_creds = os.environ.get("YTMUSIC_OAUTH_CREDENTIALS")
     if oauth_creds:
-        return oauth_creds, False
+        return oauth_creds
 
-    # Try cookie string
     cookie = os.environ.get("YT_MUSIC_COOKIE")
     if cookie:
-        return cookie, True
+        return cookie
 
-    # Try --cookie or --oauth from command args
-    cookie = None
-    oauth = None
     for i, arg in enumerate(sys.argv):
+        if arg == "--oauth" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
         if arg == "--cookie" and i + 1 < len(sys.argv):
-            cookie = sys.argv[i + 1]
-        elif arg == "--oauth" and i + 1 < len(sys.argv):
-            oauth = sys.argv[i + 1]
+            return sys.argv[i + 1]
 
-    if oauth:
-        return oauth, False
-    if cookie:
-        return cookie, True
-
-    return None, False
+    return None
 
 
-def _create_ytmusic_instance(auth_cookie=None, needs_auth=False):
-    """Create a YTMusic instance with proper auth handling.
-    
-    Args:
-        auth_cookie: The raw cookie string or None
-        needs_auth: If True, raises error if auth is not available/valid.
-    
-    Returns:
-        YTMusic instance (authenticated or anonymous)
+def _cookie_dict_to_headers(cookie_dict: dict) -> dict:
+    """Convert a cookie name/value dict into ytmusicapi browser headers format.
+
+    ytmusicapi expects browser auth as a JSON file with HTTP headers,
+    NOT a flat dict of cookie name=value pairs. The key header is
+    "Cookie" containing the full cookie string.
     """
-    if auth_cookie is None:
-        auth_cookie, is_cookie = _get_auth_from_env()
-    else:
-        is_cookie = True
+    if "Cookie" in cookie_dict or "cookie" in cookie_dict:
+        out = dict(cookie_dict)
+        if "User-Agent" not in out:
+            out["User-Agent"] = _UA
+        return out
 
-    # If no auth is configured, return anonymous instance
-    if auth_cookie is None:
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+    return {"Cookie": cookie_str, "User-Agent": _UA}
+
+
+def _save_headers(headers: dict) -> str:
+    """Save browser headers dict to a temp JSON file and return the path.
+    ytmusicapi YTMusic(auth=) must receive a FILE PATH for browser auth,
+    not a dict (dicts are interpreted as OAuth credentials)."""
+    global _headers_file
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="ytm_headers_")
+    with os.fdopen(fd, "w") as f:
+        json.dump(headers, f)
+    _headers_file = path
+    return path
+
+
+def _cookie_string_to_headers(cookie_str: str) -> dict:
+    """Parse a raw cookie header string like 'key=val; key2=val2' into
+    the browser headers format."""
+    pairs = {}
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            pairs[k] = v
+    return _cookie_dict_to_headers(pairs)
+
+
+def _create_ytmusic_instance(needs_auth=False):
+    """Create a YTMusic instance with proper auth handling."""
+    auth_value = _get_auth_value()
+
+    if auth_value is None:
         if needs_auth:
-            raise RuntimeError("No authentication method configured. Set YT_MUSIC_COOKIE or YTMUSIC_OAUTH_CREDENTIALS, or pass --cookie or --oauth.")
+            raise RuntimeError(
+                "No authentication configured. Set YT_MUSIC_COOKIE "
+                "(file path to browser-headers JSON) or "
+                "YTMUSIC_OAUTH_CREDENTIALS."
+            )
         return YTMusic()
 
-    # Try to parse as JSON dict
+    # --- OAuth credentials file (pass straight through) ---
+    # Heuristic: if the string contains "access_token" or "refresh_token"
+    # after JSON parsing, it's an OAuth credential file / string.
+    # We only need to ensure we pass a file path (not a dict) to YTMusic.
+
+    # 1) If it's an existing file path, check the format
+    if os.path.isfile(auth_value):
+        try:
+            with open(auth_value) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            # Not valid JSON; try passing path as-is
+            return YTMusic(auth=auth_value)
+
+        if not isinstance(data, dict):
+            return YTMusic(auth=auth_value)
+
+        # If already in browser-headers format, pass the file path
+        if "Cookie" in data or "cookie" in data or "User-Agent" in data:
+            return YTMusic(auth=auth_value)
+
+        # If it looks like an OAuth credential file, pass as-is
+        if "access_token" in data or "refresh_token" in data:
+            return YTMusic(auth=auth_value)
+
+        # It's a cookie name/value dict — convert to browser headers
+        headers = _cookie_dict_to_headers(data)
+        path = _save_headers(headers)
+        return YTMusic(auth=path)
+
+    # 2) Try to parse as JSON string
     try:
-        auth_dict = json.loads(auth_cookie)
-        if isinstance(auth_dict, dict):
-            return YTMusic(auth=auth_dict)
+        data = json.loads(auth_value)
+        if isinstance(data, dict):
+            # Already in browser-headers format?
+            if "Cookie" in data or "cookie" in data:
+                path = _save_headers(data)
+                return YTMusic(auth=path)
+
+            # OAuth credential dict?
+            if "access_token" in data or "refresh_token" in data:
+                path = _save_headers(data)
+                return YTMusic(auth=path)
+
+            # Cookie name/value dict — convert
+            headers = _cookie_dict_to_headers(data)
+            path = _save_headers(headers)
+            return YTMusic(auth=path)
     except json.JSONDecodeError:
         pass
 
-    # Try as file path
-    if os.path.exists(auth_cookie):
-        return YTMusic(auth=auth_cookie)
+    # 3) Raw cookie string like "key=val; key2=val2"
+    try:
+        headers = _cookie_string_to_headers(auth_value)
+        path = _save_headers(headers)
+        return YTMusic(auth=path)
+    except Exception:
+        pass
 
-    # Try to save cookie as a JSON file for ytmusicapi
-    if is_cookie:
-        try:
-            # Create a temporary cookie file with the full cookie set
-            cookie_dict = {}
-            # If the cookie contains multiple key=value pairs, split them
-            for part in auth_cookie.split(';'):
-                part = part.strip()
-                if '=' in part:
-                    k, v = part.split('=', 1)
-                    cookie_dict[k] = v
-                else:
-                    cookie_dict[part] = True
-
-            # Create a temp file with the cookie dict
-            import tempfile
-            fd, temp_path = tempfile.mkstemp(suffix='.json', prefix='ytm_cookie_')
-            with os.fdopen(fd, 'w') as f:
-                json.dump(cookie_dict, f)
-            return YTMusic(auth=temp_path)
-        except Exception:
-            pass
-
-    # If all attempts fail, try passing the raw string as file path
-    # (might fail but gives the ytmusicapi error message)
+    # 4) Last resort — pass as-is (may be OAuth file path that doesn't exist yet)
     if needs_auth:
-        return YTMusic(auth=auth_cookie)
-    else:
-        return YTMusic()
+        return YTMusic(auth=auth_value)
+    return YTMusic()
 
 
 def get_ytmusic(needs_auth=False):
