@@ -44,45 +44,56 @@ public class YouTubeMusicDownloadService : BaseDownloadService
         var quality = _settings.Quality ?? "FLAC";
         cancellationToken.ThrowIfCancellationRequested();
 
-        var tempDir = Path.Combine(Path.GetTempPath(), "octo-fiesta-ytm-dl");
+        var tempDir = Path.Combine(Path.GetTempPath(), "octo-fiesta-ytm-dl", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
-        var downloadResult = await _bridge.DownloadTrackFileAsync(trackId, quality, tempDir);
-
-        if (downloadResult == null || string.IsNullOrEmpty(downloadResult.Filepath))
+        string? filePath = null;
+        try
         {
-            throw new Exception($"yt-dlp download failed for track {trackId}: bridge returned no filepath");
-        }
+            var downloadResult = await _bridge.DownloadTrackFileAsync(trackId, quality, tempDir);
 
-        var filePath = downloadResult.Filepath;
-        if (!File.Exists(filePath))
+            if (downloadResult == null || string.IsNullOrEmpty(downloadResult.Filepath))
+            {
+                throw new Exception($"yt-dlp download failed for track {trackId}: bridge returned no filepath");
+            }
+
+            filePath = downloadResult.Filepath;
+            if (!File.Exists(filePath))
+            {
+                throw new Exception($"yt-dlp download failed for track {trackId}: file not found at {filePath}");
+            }
+
+            _logger.LogInformation(
+                "Downloaded track {TrackId} via yt-dlp: {Filepath} (codec={Codec}, bitrate={Bitrate})",
+                trackId, filePath, downloadResult.Codec, downloadResult.Bitrate);
+
+            var memoryStream = new MemoryStream();
+            using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                await fileStream.CopyToAsync(memoryStream, cancellationToken);
+            }
+            memoryStream.Position = 0;
+
+            var extension = YouTubeMusicQuality.MimeTypeToExtension(downloadResult.MimeType);
+            var downloadedQuality = YouTubeMusicQuality.FromApiParams(downloadResult.MimeType, downloadResult.Bitrate);
+
+            double? mp4Duration = null;
+            if (downloadResult.DurationMs > 0)
+            {
+                mp4Duration = downloadResult.DurationMs / 1000.0;
+            }
+
+            return new DownloadResult(memoryStream, extension, downloadedQuality, mp4Duration);
+        }
+        finally
         {
-            throw new Exception($"yt-dlp download failed for track {trackId}: file not found at {filePath}");
+            // Clean up downloaded file and temp directory
+            if (filePath != null)
+            {
+                try { File.Delete(filePath); } catch { /* best effort */ }
+            }
+            try { Directory.Delete(tempDir, false); } catch { /* best effort */ }
         }
-
-        _logger.LogInformation(
-            "Downloaded track {TrackId} via yt-dlp: {Filepath} (codec={Codec}, bitrate={Bitrate})",
-            trackId, filePath, downloadResult.Codec, downloadResult.Bitrate);
-
-        var memoryStream = new MemoryStream();
-        using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, FileOptions.DeleteOnClose))
-        {
-            await fileStream.CopyToAsync(memoryStream, cancellationToken);
-        }
-        memoryStream.Position = 0;
-
-        try { File.Delete(filePath); } catch { /* best effort cleanup */ }
-
-        var extension = YouTubeMusicQuality.MimeTypeToExtension(downloadResult.MimeType);
-        var downloadedQuality = YouTubeMusicQuality.FromApiParams(downloadResult.MimeType, downloadResult.Bitrate);
-
-        double? mp4Duration = null;
-        if (downloadResult.DurationMs > 0)
-        {
-            mp4Duration = downloadResult.DurationMs / 1000.0;
-        }
-
-        return new DownloadResult(memoryStream, extension, downloadedQuality, mp4Duration);
     }
 
     protected override string? ExtractExternalIdFromAlbumId(string albumId)

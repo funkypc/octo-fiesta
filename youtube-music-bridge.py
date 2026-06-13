@@ -13,7 +13,7 @@ Authentication:
 Usage:
   python youtube-music-bridge.py <command> [args...]
   python youtube-music-bridge.py search-songs "queen" 20
-  python youtube-music-bridge.py get-stream-url dQw4w9WgXcQ FLAC
+  python youtube-music-bridge.py download-track dQw4w9WgXcQ FLAC /tmp/ytm
 """
 
 import json
@@ -45,6 +45,17 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 _ymusic: Optional[YTMusic] = None
 _ymusic_noauth: Optional[YTMusic] = None
 _headers_file: Optional[str] = None
+
+_QUALITY_SPEC_MAP = {
+    "FLAC": "bestaudio",
+    "AAC_256": "bestaudio[abr<=256]",
+    "AAC_192": "bestaudio[abr<=192]",
+    "MP3_256": "bestaudio[abr<=256]",
+    "MP3_320": "bestaudio",
+    "MP3_128": "bestaudio[abr<=128]",
+    "AAC_128": "bestaudio[abr<=128]",
+    "AAC_64": "bestaudio[abr<=64]",
+}
 
 
 def _get_auth_value():
@@ -87,18 +98,7 @@ def _make_sapisidhash(sapisid: str, origin: str = _YTM_ORIGIN) -> str:
 
 
 def _cookie_dict_to_headers(cookie_dict: dict) -> dict:
-    """Convert a cookie name/value dict into ytmusicapi browser headers format.
-
-    ytmusicapi requires the headers dict to have:
-    - "cookie": full cookie string
-    - "x-goog-authuser": "0" (required by setup_browser)
-    - "authorization": SAPISIDHASH (required by determine_auth_type)
-    - "user-agent": browser user agent
-    - "origin": https://music.youtube.com
-
-    Without the "authorization" header containing SAPISIDHASH,
-    determine_auth_type() defaults to OAUTH_CUSTOM_CLIENT.
-    """
+    """Convert a cookie name/value dict into ytmusicapi browser headers format."""
     # Already in browser-headers format
     if "Cookie" in cookie_dict or "cookie" in cookie_dict:
         out = dict(cookie_dict)
@@ -132,9 +132,7 @@ def _cookie_dict_to_headers(cookie_dict: dict) -> dict:
 
 
 def _save_headers(headers: dict) -> str:
-    """Save browser headers dict to a temp JSON file and return the path.
-    ytmusicapi YTMusic(auth=) must receive a FILE PATH for browser auth,
-    not a dict (dicts are interpreted as OAuth credentials)."""
+    """Save browser headers dict to a temp JSON file and return the path."""
     global _headers_file
     fd, path = tempfile.mkstemp(suffix=".json", prefix="ytm_headers_")
     with os.fdopen(fd, "w") as f:
@@ -167,10 +165,6 @@ def _create_ytmusic_instance(needs_auth=False):
                 "YTMUSIC_OAUTH_CREDENTIALS."
             )
         return YTMusic()
-
-    # --- OAuth credentials file (pass straight through) ---
-    # Heuristic: if the string contains "access_token" or "refresh_token"
-    # after JSON parsing, it's an OAuth credential file / string.
 
     # 1) If it's an existing file path, check the format
     if os.path.isfile(auth_value):
@@ -223,18 +217,14 @@ def _create_ytmusic_instance(needs_auth=False):
     except Exception:
         pass
 
-    # 4) Last resort — pass as-is (may fail but gives the ytmusicapi error message)
+    # 4) Last resort — pass as-is
     if needs_auth:
         return YTMusic(auth=auth_value)
     return YTMusic()
 
 
 def get_ytmusic(needs_auth=False):
-    """Get a YTMusic client instance.
-
-    For search/browsing operations, returns an anonymous client if auth fails.
-    For stream/auth-check operations, requires valid auth.
-    """
+    """Get a YTMusic client instance."""
     global _ymusic
     if _ymusic is not None:
         return _ymusic
@@ -244,7 +234,6 @@ def get_ytmusic(needs_auth=False):
     except Exception:
         if needs_auth:
             raise
-        # Auth failed but operation doesn't require it — use anonymous
         global _ymusic_noauth
         if _ymusic_noauth is not None:
             return _ymusic_noauth
@@ -324,6 +313,222 @@ def _map_artist(ar: dict) -> dict:
         "thumbnails": ar.get("thumbnails") or [],
         "albumCount": ar.get("albumCount"),
     }
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp helpers
+# ---------------------------------------------------------------------------
+
+def _write_netscape_cookie_file(raw_cookie: str, user_agent: str = "") -> str:
+    """Parse a raw cookie string like 'key=val; key2=val2' and write
+    a Netscape cookie file for yt-dlp. Returns the temp file path."""
+    from http.cookies import SimpleCookie as SC
+    fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
+    with os.fdopen(fd, "w") as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        cookie = SC()
+        cookie.load(raw_cookie.replace('"', ""))
+        for key, morsel in cookie.items():
+            f.write(f".youtube.com\tTRUE\t/\tTRUE\t0\t{key}\t{morsel.value}\n")
+    return path
+
+
+class _YtdlpLogger:
+    """Capture yt-dlp error messages and print them to stderr."""
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg): print(f"[yt-dlp] {msg}", file=sys.stderr, flush=True)
+    def error(self, msg): print(f"[yt-dlp] ERROR: {msg}", file=sys.stderr, flush=True)
+
+
+def _build_ytdlp_cookie_path(auth_value: str) -> Optional[str]:
+    """Given the raw auth value, build a Netscape cookie file for yt-dlp
+    and return its path. Returns None if no cookies can be extracted."""
+    data = None
+    try:
+        if os.path.isfile(auth_value):
+            with open(auth_value) as f:
+                data = json.load(f)
+        elif auth_value.startswith("{"):
+            data = json.loads(auth_value)
+    except (json.JSONDecodeError, OSError):
+        # Try as raw cookie string
+        return _write_netscape_cookie_file(auth_value)
+
+    if data and isinstance(data, dict):
+        if "cookie" in data or "Cookie" in data:
+            raw_cookie = data.get("cookie", data.get("Cookie", ""))
+            ua = data.get("user-agent", data.get("User-Agent", ""))
+            return _write_netscape_cookie_file(raw_cookie, ua)
+        else:
+            # Cookie name/value dict — write directly
+            fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
+            with os.fdopen(fd, "w") as f:
+                f.write("# Netscape HTTP Cookie File\n")
+                for k, v in data.items():
+                    f.write(f".youtube.com\tTRUE\t/\tTRUE\t0\t{k}\t{v}\n")
+            return path
+
+    # Try as raw cookie string
+    if "=" in auth_value and not auth_value.startswith("{"):
+        return _write_netscape_cookie_file(auth_value)
+
+    return None
+
+
+def _ytdlp_player_clients(has_cookies: bool):
+    """Return the list of player_client options to try, in order.
+    
+    web_music: YouTube Music client — works with cookie auth, no JS sig solving needed.
+    web: Standard web client — may require Node.js for signature solving.
+    
+    When cookies are available (premium auth), web_music is preferred because
+    it accesses music content directly and doesn't need JavaScript runtime
+    for signature deciphering.
+    """
+    if has_cookies:
+        return ["web_music", "web"]
+    return ["web", "web_music"]
+
+
+def _ytdlp_extract_info(video_id: str, quality: str, auth_value, download: bool = False, output_dir: str = ""):
+    """Core yt-dlp extraction logic with automatic fallback between player clients.
+    
+    Tries each player_client in sequence until one succeeds.
+    Returns the info dict from yt-dlp, or raises the last exception encountered.
+    """
+    quality_spec = _QUALITY_SPEC_MAP.get(quality.upper(), "bestaudio")
+    is_transcode = quality.upper().startswith("MP3_") or quality.upper().startswith("AAC_")
+
+    cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
+    has_cookies = cookie_path is not None
+    clients_to_try = _ytdlp_player_clients(has_cookies)
+
+    last_error = None
+    for client in clients_to_try:
+        ydl_opts = {
+            "format": quality_spec,
+            "quiet": True,
+            "logger": _YtdlpLogger(),
+            "extractor_args": {"youtube": {"player_client": [client]}},
+        }
+
+        if cookie_path:
+            ydl_opts["cookiefile"] = cookie_path
+
+        if download:
+            output_template = os.path.join(output_dir, f"ytm_{video_id}_%(id)s.%(ext)s")
+            ydl_opts["outtmpl"] = output_template
+            ydl_opts["postprocessors"] = []
+
+            if is_transcode:
+                if quality.upper().startswith("MP3_"):
+                    abr_str = quality.upper().replace("MP3_", "")
+                    ydl_opts["postprocessors"].append({
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": abr_str,
+                    })
+                elif quality.upper().startswith("AAC_"):
+                    abr_str = quality.upper().replace("AAC_", "")
+                    ydl_opts["postprocessors"].append({
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "m4a",
+                        "preferredquality": abr_str,
+                    })
+                ydl_opts["prefer_ffmpeg"] = True
+        else:
+            ydl_opts["extract_flat"] = False
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(
+                    f"https://music.youtube.com/watch?v={video_id}",
+                    download=download,
+                )
+                if info:
+                    return info, ydl, client
+        except Exception as e:
+            last_error = e
+            print(f"[yt-dlp] Player client '{client}' failed: {e}", file=sys.stderr, flush=True)
+            continue
+
+    raise last_error or RuntimeError("All player clients failed")
+
+
+def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
+    """Use yt-dlp to extract the stream URL for a video."""
+    if not _HAS_YTDLP:
+        return None
+
+    auth_value = _get_auth_value()
+
+    try:
+        info, ydl, _ = _ytdlp_extract_info(video_id, quality, auth_value, download=False)
+
+        # Get the best audio format directly from yt-dlp's selection
+        url = info.get("url")
+        if url:
+            mime = info.get("mime_type", "audio/mp4")
+            abr = info.get("abr") or info.get("tbr") or 0
+            return {
+                "url": url,
+                "mimeType": mime,
+                "bitrate": int(abr * 1000) if abr else 0,
+                "codec": mime.split(";")[0].replace("audio/", "") if "/" in mime else "m4a",
+                "quality": info.get("format_note", ""),
+                "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
+            }
+
+        # Fallback: search formats list
+        formats = info.get("formats", [])
+        audio_formats = [
+            f for f in formats
+            if f.get("acodec") != "none" and f.get("vcodec") == "none"
+        ]
+        if not audio_formats:
+            return None
+
+        audio_formats.sort(key=lambda f: f.get("abr", 0) or f.get("tbr", 0) or 0, reverse=True)
+
+        selected = audio_formats[0]
+        if quality.upper() in ("MP3_128", "AAC_64"):
+            for f in audio_formats:
+                abr_f = f.get("abr", 0) or 0
+                if abr_f <= 128:
+                    selected = f
+                    break
+
+        url = selected.get("url")
+        if not url:
+            return None
+
+        mime = selected.get("mime_type", "audio/mp4")
+        abr = selected.get("abr") or selected.get("tbr") or 0
+
+        return {
+            "url": url,
+            "mimeType": mime,
+            "bitrate": int(abr * 1000) if abr else 0,
+            "codec": mime.split(";")[0].replace("audio/", "") if "/" in mime else "m4a",
+            "quality": selected.get("format_note", ""),
+            "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
+        }
+    except Exception as e:
+        print(f"[yt-dlp] Stream URL extraction failed: {e}", file=sys.stderr, flush=True)
+        return None
+
+
+def _extract_url_from_cipher(sig_cipher: str) -> str | None:
+    """Try to extract the base URL from a signatureCipher string.
+    Returns None if the URL cannot be used without signature deciphering."""
+    from urllib.parse import unquote
+    url_part = ""
+    for part in sig_cipher.split("&"):
+        if part.startswith("url="):
+            url_part = unquote(part[4:])
+            break
+    return url_part if url_part else None
 
 
 # ---------------------------------------------------------------------------
@@ -440,158 +645,12 @@ def cmd_get_artist_albums(browse_id: str):
     ok({"albums": [_map_album(a) for a in albums_list]})
 
 
-def _write_netscape_cookie_file(raw_cookie: str, user_agent: str = "") -> str:
-    """Parse a raw cookie string like 'key=val; key2=val2' and write
-    a Netscape cookie file for yt-dlp. Returns the temp file path."""
-    from http.cookies import SimpleCookie
-    fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
-    with os.fdopen(fd, "w") as f:
-        f.write("# Netscape HTTP Cookie File\n")
-        cookie = SimpleCookie()
-        cookie.load(raw_cookie.replace('"', ""))
-        for key, morsel in cookie.items():
-            f.write(f".youtube.com\tTRUE\t/\tTRUE\t0\t{key}\t{morsel.value}\n")
-    return path
-
-
-class _YtdlpLogger:
-    """Capture yt-dlp error messages and print them to stderr."""
-    def debug(self, msg): pass
-    def info(self, msg): pass
-    def warning(self, msg): print(f"[yt-dlp] {msg}", file=sys.stderr, flush=True)
-    def error(self, msg): print(f"[yt-dlp] ERROR: {msg}", file=sys.stderr, flush=True)
-
-
-def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
-    """Use yt-dlp to extract the stream URL for a video.
-    yt-dlp handles signature deciphering and n-parameter throttling."""
-    if not _HAS_YTDLP:
-        return None
-
-    quality_spec = {
-        "FLAC": "bestaudio",
-        "AAC_256": "bestaudio[abr<=256]",
-        "AAC_192": "bestaudio[abr<=192]",
-        "MP3_256": "bestaudio[abr<=256]",
-        "MP3_320": "bestaudio",
-        "MP3_128": "bestaudio[abr<=128]",
-        "AAC_128": "bestaudio[abr<=128]",
-        "AAC_64": "bestaudio[abr<=64]",
-    }.get(quality.upper(), "bestaudio")
-
-    ydl_opts = {
-        "format": quality_spec,
-        "quiet": True,
-        "extract_flat": False,
-        "logger": _YtdlpLogger(),
-        "extractor_args": {"youtube": {"player_client": ["web"]}},
-    }
-
-    # Pass auth cookies to yt-dlp if available
-    auth_value = _get_auth_value()
-    if auth_value:
-        try:
-            data = None
-            if os.path.isfile(auth_value):
-                with open(auth_value) as f:
-                    data = json.load(f)
-            elif auth_value.startswith("{"):
-                data = json.loads(auth_value)
-
-            if data and isinstance(data, dict):
-                # If this is browser-headers format (has "cookie" key), extract cookies
-                if "cookie" in data or "Cookie" in data:
-                    raw_cookie = data.get("cookie", data.get("Cookie", ""))
-                    ua = data.get("user-agent", data.get("User-Agent", ""))
-                    _yt_tmp_cookie = _write_netscape_cookie_file(raw_cookie, ua)
-                elif "authorization" in data:
-                    # Browser headers but no explicit cookie string — reassemble from dict
-                    raw_cookie = data.get("cookie", data.get("Cookie", ""))
-                    if raw_cookie:
-                        _yt_tmp_cookie = _write_netscape_cookie_file(raw_cookie)
-                    # Without a cookie string, yt-dlp can't auth — skip
-                else:
-                    # Cookie name/value dict — convert all entries to Netscape format
-                    fd, _yt_tmp_cookie = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
-                    with os.fdopen(fd, "w") as f:
-                        f.write("# Netscape HTTP Cookie File\n")
-                        for k, v in data.items():
-                            f.write(f".youtube.com\tTRUE\t/\tTRUE\t0\t{k}\t{v}\n")
-                ydl_opts["cookiefile"] = _yt_tmp_cookie
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://music.youtube.com/watch?v={video_id}", download=False)
-            if not info:
-                return None
-
-            # Get the best audio format directly from yt-dlp's selection
-            url = info.get("url")
-            if url:
-                mime = info.get("mime_type", "audio/mp4")
-                abr = info.get("abr") or info.get("tbr") or 0
-                return {
-                    "url": url,
-                    "mimeType": mime,
-                    "bitrate": int(abr * 1000) if abr else 0,
-                    "codec": mime.split(";")[0].replace("audio/", "") if "/" in mime else "m4a",
-                    "quality": info.get("format_note", ""),
-                    "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
-                }
-
-            # Fallback: search formats list
-            formats = info.get("formats", [])
-            audio_formats = [
-                f for f in formats
-                if f.get("acodec") != "none" and f.get("vcodec") == "none"
-            ]
-            if not audio_formats:
-                return None
-
-            audio_formats.sort(key=lambda f: f.get("abr", 0) or f.get("tbr", 0) or 0, reverse=True)
-
-            selected = audio_formats[0]
-            if quality.upper() in ("MP3_128", "AAC_64"):
-                for f in audio_formats:
-                    abr_f = f.get("abr", 0) or 0
-                    if abr_f <= 128:
-                        selected = f
-                        break
-
-            url = selected.get("url")
-            if not url:
-                return None
-
-            mime = selected.get("mime_type", "audio/mp4")
-            abr = selected.get("abr") or selected.get("tbr") or 0
-
-            return {
-                "url": url,
-                "mimeType": mime,
-                "bitrate": int(abr * 1000) if abr else 0,
-                "codec": mime.split(";")[0].replace("audio/", "") if "/" in mime else "m4a",
-                "quality": selected.get("format_note", ""),
-                "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
-            }
-    except Exception:
-        return None
-
-
-def _extract_url_from_cipher(sig_cipher: str) -> str | None:
-    """Try to extract the base URL from a signatureCipher string.
-    Returns None if the URL cannot be used without signature deciphering."""
-    from urllib.parse import unquote
-    url_part = ""
-    for part in sig_cipher.split("&"):
-        if part.startswith("url="):
-            url_part = unquote(part[4:])
-            break
-    return url_part if url_part else None
-
-
 def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = ""):
+    """Download a track using yt-dlp with automatic player_client fallback.
+    
+    Tries web_music first (no JS runtime needed, works with cookie auth),
+    then falls back to web client if that fails.
+    """
     if not _HAS_YTDLP:
         fail("yt-dlp is required for downloading. Install with: pip install yt-dlp")
         return
@@ -599,124 +658,67 @@ def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = "
     if not output_dir:
         output_dir = tempfile.gettempdir()
 
-    quality_spec = {
-        "FLAC": "bestaudio",
-        "AAC_256": "bestaudio[abr<=256]",
-        "AAC_192": "bestaudio[abr<=192]",
-        "MP3_256": "bestaudio[abr<=256]",
-        "MP3_320": "bestaudio",
-        "MP3_128": "bestaudio[abr<=128]",
-        "AAC_128": "bestaudio[abr<=128]",
-        "AAC_64": "bestaudio[abr<=64]",
-    }.get(quality.upper(), "bestaudio")
+    os.makedirs(output_dir, exist_ok=True)
 
     is_transcode = quality.upper().startswith("MP3_") or quality.upper().startswith("AAC_")
-    output_template = os.path.join(output_dir, f"ytm_{video_id}_%(id)s.%(ext)s")
-
-    ydl_opts = {
-        "format": quality_spec,
-        "quiet": True,
-        "outtmpl": output_template,
-        "logger": _YtdlpLogger(),
-        "extractor_args": {"youtube": {"player_client": ["web"]}},
-        "postprocessors": [],
-    }
-
-    if is_transcode:
-        if quality.upper().startswith("MP3_"):
-            abr_str = quality.upper().replace("MP3_", "")
-            ydl_opts["postprocessors"].append({
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": abr_str,
-            })
-        elif quality.upper().startswith("AAC_"):
-            abr_str = quality.upper().replace("AAC_", "")
-            ydl_opts["postprocessors"].append({
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "m4a",
-                "preferredquality": abr_str,
-            })
-        ydl_opts["prefer_ffmpeg"] = True
 
     auth_value = _get_auth_value()
-    if auth_value:
-        try:
-            data = None
-            if os.path.isfile(auth_value):
-                with open(auth_value) as f:
-                    data = json.load(f)
-            elif auth_value.startswith("{"):
-                data = json.loads(auth_value)
-
-            if data and isinstance(data, dict):
-                if "cookie" in data or "Cookie" in data:
-                    raw_cookie = data.get("cookie", data.get("Cookie", ""))
-                    ua = data.get("user-agent", data.get("User-Agent", ""))
-                    cookie_path = _write_netscape_cookie_file(raw_cookie, ua)
-                else:
-                    fd, cookie_path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
-                    with os.fdopen(fd, "w") as f:
-                        f.write("# Netscape HTTP Cookie File\n")
-                        for k, v in data.items():
-                            f.write(f".youtube.com\tTRUE\t/\tTRUE\t0\t{k}\t{v}\n")
-                ydl_opts["cookiefile"] = cookie_path
-        except (json.JSONDecodeError, OSError):
-            pass
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://music.youtube.com/watch?v={video_id}", download=True)
-            if not info:
-                fail("yt-dlp returned no info")
-                return
+        info, ydl, used_client = _ytdlp_extract_info(
+            video_id, quality, auth_value, download=True, output_dir=output_dir
+        )
 
-            requested_downloads = info.get("requested_downloads") or []
-            if requested_downloads:
-                filepath = requested_downloads[0].get("__final_filepath") or requested_downloads[0].get("filepath")
-            else:
-                filepath = ydl.prepare_filename(info)
-                for ext in (".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav"):
-                    candidate = os.path.splitext(filepath)[0] + ext
-                    if os.path.exists(candidate):
-                        filepath = candidate
-                        break
+        if not info:
+            fail("yt-dlp returned no info")
+            return
 
-            if not filepath or not os.path.exists(filepath):
-                fail(f"Downloaded file not found. Expected: {filepath}")
-                return
+        requested_downloads = info.get("requested_downloads") or []
+        if requested_downloads:
+            filepath = requested_downloads[0].get("__final_filepath") or requested_downloads[0].get("filepath")
+        else:
+            filepath = ydl.prepare_filename(info)
+            for ext in (".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav", ".webm"):
+                candidate = os.path.splitext(filepath)[0] + ext
+                if os.path.exists(candidate):
+                    filepath = candidate
+                    break
 
-            mime = info.get("mime_type", "audio/mp4")
-            abr = info.get("abr") or info.get("tbr") or 0
+        if not filepath or not os.path.exists(filepath):
+            fail(f"Downloaded file not found. Expected: {filepath}")
+            return
 
-            actual_ext = os.path.splitext(filepath)[1].lstrip(".")
-            if is_transcode and quality.upper().startswith("MP3_"):
-                actual_ext = "mp3"
-            elif is_transcode and quality.upper().startswith("AAC_"):
-                actual_ext = "m4a"
+        mime = info.get("mime_type", "audio/mp4")
+        abr = info.get("abr") or info.get("tbr") or 0
 
-            actual_mime = {
-                "mp3": "audio/mp3",
-                "m4a": "audio/mp4",
-                "opus": "audio/webm; codecs=opus",
-                "flac": "audio/flac",
-                "ogg": "audio/ogg",
-                "wav": "audio/wav",
-            }.get(actual_ext, mime)
+        actual_ext = os.path.splitext(filepath)[1].lstrip(".")
+        if is_transcode and quality.upper().startswith("MP3_"):
+            actual_ext = "mp3"
+        elif is_transcode and quality.upper().startswith("AAC_"):
+            actual_ext = "m4a"
 
-            if actual_ext == "mp3":
-                actual_mime = "audio/mp3"
-            elif actual_ext == "m4a":
-                actual_mime = "audio/mp4"
+        actual_mime = {
+            "mp3": "audio/mp3",
+            "m4a": "audio/mp4",
+            "opus": "audio/webm; codecs=opus",
+            "flac": "audio/flac",
+            "ogg": "audio/ogg",
+            "wav": "audio/wav",
+        }.get(actual_ext, mime)
 
-            ok({
-                "filepath": filepath,
-                "mimeType": actual_mime,
-                "bitrate": int(abr * 1000) if abr else 0,
-                "codec": actual_mime.split(";")[0].replace("audio/", "") if "/" in actual_mime else actual_ext,
-                "quality": info.get("format_note", ""),
-                "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
-            })
+        if actual_ext == "mp3":
+            actual_mime = "audio/mp3"
+        elif actual_ext == "m4a":
+            actual_mime = "audio/mp4"
+
+        ok({
+            "filepath": filepath,
+            "mimeType": actual_mime,
+            "bitrate": int(abr * 1000) if abr else 0,
+            "codec": actual_mime.split(";")[0].replace("audio/", "") if "/" in actual_mime else actual_ext,
+            "quality": info.get("format_note", ""),
+            "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
+        })
     except Exception as e:
         fail(f"yt-dlp download failed: {e}")
 
