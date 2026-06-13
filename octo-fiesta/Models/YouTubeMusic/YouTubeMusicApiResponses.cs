@@ -123,6 +123,27 @@ public record YouTubeMusicStreamResult
     public int DurationMs { get; init; }
 }
 
+public record YouTubeMusicDownloadResult
+{
+    [JsonPropertyName("filepath")]
+    public string? Filepath { get; init; }
+
+    [JsonPropertyName("mimeType")]
+    public string? MimeType { get; init; }
+
+    [JsonPropertyName("bitrate")]
+    public int Bitrate { get; init; }
+
+    [JsonPropertyName("codec")]
+    public string? Codec { get; init; }
+
+    [JsonPropertyName("quality")]
+    public string? Quality { get; init; }
+
+    [JsonPropertyName("durationMs")]
+    public int DurationMs { get; init; }
+}
+
 /// <summary>
 /// Bridge result for auth check.
 /// </summary>

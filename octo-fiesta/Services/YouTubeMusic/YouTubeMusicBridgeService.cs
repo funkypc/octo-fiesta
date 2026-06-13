@@ -42,6 +42,11 @@ public class YouTubeMusicBridgeService
     /// <exception cref="InvalidOperationException">Thrown if the bridge returns an error or fails to execute.</exception>
     public virtual async Task<T> CallBridgeAsync<T>(string command, params string[] args) where T : class
     {
+        return await CallBridgeAsync<T>(command, _processTimeout, args);
+    }
+
+    public virtual async Task<T> CallBridgeAsync<T>(string command, TimeSpan timeout, params string[] args) where T : class
+    {
         var allArgs = new List<string> { command };
         allArgs.AddRange(args);
 
@@ -119,13 +124,13 @@ public class YouTubeMusicBridgeService
         var waitForOutput = Task.WhenAll(outputTcs.Task, errorTcs.Task);
         var completed = await Task.WhenAny(
             waitForOutput,
-            Task.Delay(_processTimeout)
+            Task.Delay(timeout)
         );
 
         if (completed != waitForOutput)
         {
             try { process.Kill(); } catch { /* ignored */ }
-            throw new InvalidOperationException($"Bridge process timed out after {_processTimeout.TotalSeconds}s for command: {command}");
+            throw new InvalidOperationException($"Bridge process timed out after {timeout.TotalSeconds}s for command: {command}");
         }
 
         var output = await outputTcs.Task;
@@ -283,6 +288,21 @@ public class YouTubeMusicBridgeService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to get stream URL for {VideoId} (quality={Quality})", videoId, quality);
+            return null;
+        }
+    }
+
+    public virtual async Task<YouTubeMusicDownloadResult?> DownloadTrackFileAsync(string videoId, string quality, string outputDir)
+    {
+        try
+        {
+            var downloadTimeout = TimeSpan.FromMinutes(5);
+            return await CallBridgeAsync<YouTubeMusicDownloadResult>(
+                "download-track", downloadTimeout, videoId, quality, outputDir);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to download track {VideoId} (quality={Quality})", videoId, quality);
             return null;
         }
     }
