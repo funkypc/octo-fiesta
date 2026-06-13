@@ -105,6 +105,13 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     {
         if (externalProvider != ProviderName) return null;
 
+        // YouTube Music album browseIds start with "MPRE" — reject video IDs early
+        if (string.IsNullOrEmpty(externalId) || !externalId.StartsWith("MPRE", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug("Skipping album lookup for non-album ID: {Id}", externalId);
+            return null;
+        }
+
         var album = await _bridge.GetAlbumAsync(externalId);
         if (album == null) return null;
 
