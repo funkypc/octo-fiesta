@@ -60,14 +60,14 @@ _ymusic_noauth: Optional[YTMusic] = None
 _headers_file: Optional[str] = None
 
 _QUALITY_SPEC_MAP = {
-    "FLAC": "bestaudio",
-    "AAC_256": "bestaudio[abr<=256]",
-    "AAC_192": "bestaudio[abr<=192]",
-    "MP3_256": "bestaudio[abr<=256]",
-    "MP3_320": "bestaudio",
-    "MP3_128": "bestaudio[abr<=128]",
-    "AAC_128": "bestaudio[abr<=128]",
-    "AAC_64": "bestaudio[abr<=64]",
+    "FLAC": "bestaudio/best",
+    "AAC_256": "bestaudio[abr<=256]/best",
+    "AAC_192": "bestaudio[abr<=192]/best",
+    "MP3_256": "bestaudio[abr<=256]/best",
+    "MP3_320": "bestaudio/best",
+    "MP3_128": "bestaudio[abr<=128]/best",
+    "AAC_128": "bestaudio[abr<=128]/best",
+    "AAC_64": "bestaudio[abr<=64]/best",
 }
 
 
@@ -613,6 +613,8 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
             "logger": _YtdlpLogger(),
             "extractor_args": {"youtube": {"player_client": [client]}},
             "postprocessors": [],
+            "js_runtimes": {"node": {}},
+            "remote_components": ["ejs:github"],
         }
 
         if cookie_path:
@@ -702,6 +704,8 @@ def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
             "extract_flat": False,
             "logger": _YtdlpLogger(),
             "extractor_args": {"youtube": {"player_client": [client]}},
+            "js_runtimes": {"node": {}},
+            "remote_components": ["ejs:github"],
         }
         cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
         if cookie_path:
