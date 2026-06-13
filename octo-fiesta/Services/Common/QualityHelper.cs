@@ -17,6 +17,7 @@ public static class QualityHelper
         { "MP3_192", 3 },
         { "AAC_192", 4 },
         { "AAC_256", 5 },
+        { "MP3_256", 5 },
         { "AAC_320", 6 },   // Tidal HIGH - 320kbps AAC
         { "MP3_320", 6 },
         

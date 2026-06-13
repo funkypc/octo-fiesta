@@ -19,4 +19,9 @@
         <InternalsVisibleTo Include="octo-fiesta.Tests" />
     </ItemGroup>
 
+    <ItemGroup>
+        <Content Include="..\youtube-music-bridge.py" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="..\requirements.txt" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
 </Project>

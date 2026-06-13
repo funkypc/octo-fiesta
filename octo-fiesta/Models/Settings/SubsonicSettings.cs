@@ -80,7 +80,12 @@ public enum MusicService
     /// <summary>
     /// Yandex music service
     /// </summary>
-    Yandex
+    Yandex,
+
+    /// <summary>
+    /// YouTube Music service
+    /// </summary>
+    YouTubeMusic
 }
 
 public class SubsonicSettings
