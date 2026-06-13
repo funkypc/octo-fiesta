@@ -22,6 +22,8 @@ import sys
 import tempfile
 import time
 import hashlib
+import urllib.request
+import urllib.error
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlparse
 from typing import Optional
@@ -45,6 +47,7 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 _ymusic: Optional[YTMusic] = None
 _ymusic_noauth: Optional[YTMusic] = None
 _headers_file: Optional[str] = None
+_ytmusic_headers: Optional[dict] = None
 
 _QUALITY_SPEC_MAP = {
     "FLAC": "bestaudio",
@@ -89,8 +92,7 @@ def _get_sapisid_from_cookie(raw_cookie: str) -> str:
 
 
 def _make_sapisidhash(sapisid: str, origin: str = _YTM_ORIGIN) -> str:
-    """Generate SAPISIDHASH authorization header value.
-    ytmusicapi requires this header to identify browser auth."""
+    """Generate SAPISIDHASH authorization header value."""
     sha_1 = hashlib.sha1()
     unix_timestamp = str(int(time.time()))
     sha_1.update((unix_timestamp + " " + sapisid + " " + origin).encode("utf-8"))
@@ -142,8 +144,7 @@ def _save_headers(headers: dict) -> str:
 
 
 def _cookie_string_to_headers(cookie_str: str) -> dict:
-    """Parse a raw cookie header string like 'key=val; key2=val2' into
-    the browser headers format."""
+    """Parse a raw cookie header string into the browser headers format."""
     pairs = {}
     for part in cookie_str.split(";"):
         part = part.strip()
@@ -225,11 +226,14 @@ def _create_ytmusic_instance(needs_auth=False):
 
 def get_ytmusic(needs_auth=False):
     """Get a YTMusic client instance."""
-    global _ymusic
+    global _ymusic, _ytmusic_headers
     if _ymusic is not None:
         return _ymusic
     try:
         _ymusic = _create_ytmusic_instance(needs_auth=needs_auth)
+        # Store headers for use in direct downloads
+        if hasattr(_ymusic, '_headers'):
+            _ytmusic_headers = _ymusic._headers
         return _ymusic
     except Exception:
         if needs_auth:
@@ -242,6 +246,78 @@ def get_ytmusic(needs_auth=False):
         return _ymusic_noauth
     _ymusic = _create_ytmusic_instance(needs_auth=needs_auth)
     return _ymusic
+
+
+def _get_download_headers():
+    """Get HTTP headers for downloading from YouTube CDN using the auth session.
+    Returns a dict of headers suitable for urllib.request."""
+    headers = {
+        "User-Agent": _UA,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": _YTM_ORIGIN + "/",
+        "Origin": _YTM_ORIGIN,
+    }
+
+    auth_value = _get_auth_value()
+    if not auth_value:
+        return headers
+
+    cookie_str = None
+    auth_header = None
+
+    # Parse auth value to extract cookies and SAPISIDHASH
+    if os.path.isfile(auth_value):
+        try:
+            with open(auth_value) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                if "cookie" in data or "Cookie" in data:
+                    cookie_str = data.get("cookie", data.get("Cookie", ""))
+                else:
+                    cookie_str = "; ".join(f"{k}={v}" for k, v in data.items())
+                auth_header = data.get("authorization")
+                if not auth_header:
+                    sapisid = _get_sapisid_from_cookie(cookie_str or "")
+                    if sapisid:
+                        auth_header = _make_sapisidhash(sapisid)
+                ua = data.get("user-agent", data.get("User-Agent", ""))
+                if ua:
+                    headers["User-Agent"] = ua
+        except (json.JSONDecodeError, OSError):
+            pass
+    elif auth_value.startswith("{"):
+        try:
+            data = json.loads(auth_value)
+            if isinstance(data, dict):
+                if "cookie" in data or "Cookie" in data:
+                    cookie_str = data.get("cookie", data.get("Cookie", ""))
+                else:
+                    cookie_str = "; ".join(f"{k}={v}" for k, v in data.items())
+                auth_header = data.get("authorization")
+                if not auth_header:
+                    sapisid = _get_sapisid_from_cookie(cookie_str or "")
+                    if sapisid:
+                        auth_header = _make_sapisidhash(sapisid)
+                ua = data.get("user-agent", data.get("User-Agent", ""))
+                if ua:
+                    headers["User-Agent"] = ua
+        except json.JSONDecodeError:
+            pass
+    else:
+        # Raw cookie string
+        if "=" in auth_value:
+            cookie_str = auth_value
+            sapisid = _get_sapisid_from_cookie(auth_value)
+            if sapisid:
+                auth_header = _make_sapisidhash(sapisid)
+
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+    if auth_header:
+        headers["Authorization"] = auth_header
+
+    return headers
 
 
 # ---------------------------------------------------------------------------
@@ -320,8 +396,7 @@ def _map_artist(ar: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _write_netscape_cookie_file(raw_cookie: str, user_agent: str = "") -> str:
-    """Parse a raw cookie string like 'key=val; key2=val2' and write
-    a Netscape cookie file for yt-dlp. Returns the temp file path."""
+    """Parse a raw cookie string and write a Netscape cookie file for yt-dlp."""
     from http.cookies import SimpleCookie as SC
     fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
     with os.fdopen(fd, "w") as f:
@@ -377,26 +452,14 @@ def _build_ytdlp_cookie_path(auth_value: str) -> Optional[str]:
 
 
 def _ytdlp_player_clients(has_cookies: bool):
-    """Return the list of player_client options to try, in order.
-    
-    web_music: YouTube Music client — works with cookie auth, no JS sig solving needed.
-    web: Standard web client — may require Node.js for signature solving.
-    
-    When cookies are available (premium auth), web_music is preferred because
-    it accesses music content directly and doesn't need JavaScript runtime
-    for signature deciphering.
-    """
+    """Return the list of player_client options to try, in order."""
     if has_cookies:
         return ["web_music", "web"]
     return ["web", "web_music"]
 
 
 def _ytdlp_extract_info(video_id: str, quality: str, auth_value, download: bool = False, output_dir: str = ""):
-    """Core yt-dlp extraction logic with automatic fallback between player clients.
-    
-    Tries each player_client in sequence until one succeeds.
-    Returns the info dict from yt-dlp, or raises the last exception encountered.
-    """
+    """Core yt-dlp extraction logic with automatic fallback between player clients."""
     quality_spec = _QUALITY_SPEC_MAP.get(quality.upper(), "bestaudio")
     is_transcode = quality.upper().startswith("MP3_") or quality.upper().startswith("AAC_")
 
@@ -532,6 +595,145 @@ def _extract_url_from_cipher(sig_cipher: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# ytmusicapi-based download fallback
+# ---------------------------------------------------------------------------
+
+def _download_track_ytmusicapi(video_id: str, quality: str, output_dir: str) -> dict | None:
+    """Download a track using ytmusicapi to get stream URLs, then download
+    via urllib with the authenticated session's cookies/headers.
+    
+    This fallback doesn't require Node.js or yt-dlp — it uses ytmusicapi's
+    authenticated session to get direct streaming URLs for premium content.
+    """
+    ytm = get_ytmusic(needs_auth=True)
+
+    try:
+        song_info = ytm.get_song(video_id)
+    except Exception as e:
+        print(f"[ytmusicapi] get_song failed: {e}", file=sys.stderr, flush=True)
+        return None
+
+    if not song_info or "streamingData" not in song_info:
+        print("[ytmusicapi] No streaming data in response", file=sys.stderr, flush=True)
+        return None
+
+    sd = song_info["streamingData"]
+
+    # Prefer adaptiveFormats (higher quality, separate audio-only streams)
+    formats = sd.get("adaptiveFormats", []) + sd.get("formats", [])
+    audio_formats = [f for f in formats if f.get("mimeType", "").startswith("audio/")]
+
+    if not audio_formats:
+        print("[ytmusicapi] No audio formats available", file=sys.stderr, flush=True)
+        return None
+
+    # Sort by bitrate descending for highest quality first
+    audio_formats.sort(key=lambda f: int(f.get("bitrate", 0)), reverse=True)
+
+    # Select format based on quality preference
+    selected = None
+
+    # For FLAC/best quality, pick highest bitrate audio-only format
+    quality_upper = quality.upper() if quality else "FLAC"
+
+    if quality_upper in ("MP3_128", "AAC_64"):
+        # Low quality: prefer formats <= 128kbps
+        for f in audio_formats:
+            if int(f.get("bitrate", 0)) <= 160000:
+                selected = f
+                break
+
+    if selected is None:
+        # For all other quality settings, pick the best audio format
+        # Prefer opus/webm for quality, then mp4/m4a
+        for f in audio_formats:
+            url = f.get("url")
+            if url:
+                selected = f
+                break
+
+    if selected is None:
+        # Try ciphered formats as last resort
+        for f in audio_formats:
+            if f.get("signatureCipher") or f.get("cipher"):
+                url = _extract_url_from_cipher(f.get("signatureCipher") or f.get("cipher", ""))
+                if url:
+                    selected = f
+                    selected["url"] = url
+                    break
+
+    if selected is None:
+        print("[ytmusicapi] No downloadable audio format found", file=sys.stderr, flush=True)
+        return None
+
+    url = selected.get("url")
+    if not url:
+        print("[ytmusicapi] Selected format has no URL", file=sys.stderr, flush=True)
+        return None
+
+    mime = selected.get("mimeType", "audio/mp4")
+    bitrate = int(selected.get("bitrate", 0))
+    duration_ms = int(song_info.get("videoDetails", {}).get("lengthSeconds", 0)) * 1000
+
+    # Determine file extension from mime type
+    codec = mime.split(";")[0].replace("audio/", "").strip().lower()
+    ext_map = {
+        "mp4": ".m4a",
+        "webm": ".webm",
+        "opus": ".opus",
+        "mp3": ".mp3",
+        "flac": ".flac",
+        "ogg": ".ogg",
+    }
+    ext = ext_map.get(codec, ".m4a")
+
+    filepath = os.path.join(output_dir, f"ytm_{video_id}{ext}")
+
+    # Download using urllib with authenticated headers
+    download_headers = _get_download_headers()
+    req = urllib.request.Request(url, headers=download_headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status != 200:
+                print(f"[ytmusicapi] Download returned status {resp.status}", file=sys.stderr, flush=True)
+                return None
+
+            content_type = resp.headers.get("Content-Type", "")
+            with open(filepath, "wb") as f:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+    except urllib.error.HTTPError as e:
+        print(f"[ytmusicapi] Download HTTP error: {e.code} {e.reason}", file=sys.stderr, flush=True)
+        return None
+    except Exception as e:
+        print(f"[ytmusicapi] Download failed: {e}", file=sys.stderr, flush=True)
+        return None
+
+    if not os.path.exists(filepath):
+        return None
+
+    # Check file size is reasonable (at least 1KB)
+    file_size = os.path.getsize(filepath)
+    if file_size < 1024:
+        print(f"[ytmusicapi] Downloaded file too small ({file_size} bytes), likely an error response", file=sys.stderr, flush=True)
+        os.remove(filepath)
+        return None
+
+    return {
+        "filepath": filepath,
+        "mimeType": mime,
+        "bitrate": bitrate,
+        "codec": codec,
+        "quality": selected.get("quality", ""),
+        "durationMs": duration_ms,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
@@ -646,81 +848,90 @@ def cmd_get_artist_albums(browse_id: str):
 
 
 def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = ""):
-    """Download a track using yt-dlp with automatic player_client fallback.
-    
-    Tries web_music first (no JS runtime needed, works with cookie auth),
-    then falls back to web client if that fails.
-    """
-    if not _HAS_YTDLP:
-        fail("yt-dlp is required for downloading. Install with: pip install yt-dlp")
-        return
-
+    """Download a track. Tries yt-dlp first, then falls back to ytmusicapi
+    direct download which doesn't require Node.js."""
     if not output_dir:
         output_dir = tempfile.gettempdir()
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # Try yt-dlp first (supports transcoding and more format options)
+    if _HAS_YTDLP:
+        try:
+            result = _download_track_ytdlp(video_id, quality, output_dir)
+            if result:
+                ok(result)
+                return
+        except Exception as e:
+            print(f"[yt-dlp] Download failed, falling back to ytmusicapi: {e}", file=sys.stderr, flush=True)
+
+    # Fallback: use ytmusicapi to get stream URL and download via urllib
+    # This works without Node.js and uses the premium cookie auth
+    result = _download_track_ytmusicapi(video_id, quality, output_dir)
+    if result:
+        ok(result)
+        return
+
+    fail("All download methods failed (yt-dlp unavailable or failed, ytmusicapi download failed)")
+
+
+def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
+    """Try downloading with yt-dlp. Returns result dict or raises exception."""
+    auth_value = _get_auth_value()
     is_transcode = quality.upper().startswith("MP3_") or quality.upper().startswith("AAC_")
 
-    auth_value = _get_auth_value()
+    info, ydl, used_client = _ytdlp_extract_info(
+        video_id, quality, auth_value, download=True, output_dir=output_dir
+    )
 
-    try:
-        info, ydl, used_client = _ytdlp_extract_info(
-            video_id, quality, auth_value, download=True, output_dir=output_dir
-        )
+    if not info:
+        raise RuntimeError("yt-dlp returned no info")
 
-        if not info:
-            fail("yt-dlp returned no info")
-            return
+    requested_downloads = info.get("requested_downloads") or []
+    if requested_downloads:
+        filepath = requested_downloads[0].get("__final_filepath") or requested_downloads[0].get("filepath")
+    else:
+        filepath = ydl.prepare_filename(info)
+        for ext in (".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav", ".webm"):
+            candidate = os.path.splitext(filepath)[0] + ext
+            if os.path.exists(candidate):
+                filepath = candidate
+                break
 
-        requested_downloads = info.get("requested_downloads") or []
-        if requested_downloads:
-            filepath = requested_downloads[0].get("__final_filepath") or requested_downloads[0].get("filepath")
-        else:
-            filepath = ydl.prepare_filename(info)
-            for ext in (".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav", ".webm"):
-                candidate = os.path.splitext(filepath)[0] + ext
-                if os.path.exists(candidate):
-                    filepath = candidate
-                    break
+    if not filepath or not os.path.exists(filepath):
+        raise RuntimeError(f"Downloaded file not found. Expected: {filepath}")
 
-        if not filepath or not os.path.exists(filepath):
-            fail(f"Downloaded file not found. Expected: {filepath}")
-            return
+    mime = info.get("mime_type", "audio/mp4")
+    abr = info.get("abr") or info.get("tbr") or 0
 
-        mime = info.get("mime_type", "audio/mp4")
-        abr = info.get("abr") or info.get("tbr") or 0
+    actual_ext = os.path.splitext(filepath)[1].lstrip(".")
+    if is_transcode and quality.upper().startswith("MP3_"):
+        actual_ext = "mp3"
+    elif is_transcode and quality.upper().startswith("AAC_"):
+        actual_ext = "m4a"
 
-        actual_ext = os.path.splitext(filepath)[1].lstrip(".")
-        if is_transcode and quality.upper().startswith("MP3_"):
-            actual_ext = "mp3"
-        elif is_transcode and quality.upper().startswith("AAC_"):
-            actual_ext = "m4a"
+    actual_mime = {
+        "mp3": "audio/mp3",
+        "m4a": "audio/mp4",
+        "opus": "audio/webm; codecs=opus",
+        "flac": "audio/flac",
+        "ogg": "audio/ogg",
+        "wav": "audio/wav",
+    }.get(actual_ext, mime)
 
-        actual_mime = {
-            "mp3": "audio/mp3",
-            "m4a": "audio/mp4",
-            "opus": "audio/webm; codecs=opus",
-            "flac": "audio/flac",
-            "ogg": "audio/ogg",
-            "wav": "audio/wav",
-        }.get(actual_ext, mime)
+    if actual_ext == "mp3":
+        actual_mime = "audio/mp3"
+    elif actual_ext == "m4a":
+        actual_mime = "audio/mp4"
 
-        if actual_ext == "mp3":
-            actual_mime = "audio/mp3"
-        elif actual_ext == "m4a":
-            actual_mime = "audio/mp4"
-
-        ok({
-            "filepath": filepath,
-            "mimeType": actual_mime,
-            "bitrate": int(abr * 1000) if abr else 0,
-            "codec": actual_mime.split(";")[0].replace("audio/", "") if "/" in actual_mime else actual_ext,
-            "quality": info.get("format_note", ""),
-            "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
-        })
-    except Exception as e:
-        fail(f"yt-dlp download failed: {e}")
+    return {
+        "filepath": filepath,
+        "mimeType": actual_mime,
+        "bitrate": int(abr * 1000) if abr else 0,
+        "codec": actual_mime.split(";")[0].replace("audio/", "") if "/" in actual_mime else actual_ext,
+        "quality": info.get("format_note", ""),
+        "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
+    }
 
 
 def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
