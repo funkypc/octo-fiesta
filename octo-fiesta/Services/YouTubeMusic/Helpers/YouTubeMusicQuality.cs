@@ -84,6 +84,7 @@ public static class YouTubeMusicQuality
             "opus" => ".opus",
             "mp4" => ".m4a",
             "mp4a" => ".m4a",
+            "webm" => ".m4a",
             _ => ".m4a"
         };
     }

@@ -23,6 +23,7 @@ Usage:
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -77,6 +78,32 @@ def acodec_to_ext(acodec: str) -> str:
         "opus": "opus", "mp4a": "m4a", "mp4a.40.2": "m4a", "mp4a.40.5": "m4a",
         "mp3": "mp3", "vorbis": "ogg", "flac": "flac",
     }.get(acodec, acodec)
+
+
+def _has_ffmpeg() -> bool:
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=10)
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _convert_webm_to_m4a(filepath: str, target_bitrate: int = 256000) -> str:
+    """Convert a webm audio file to m4a (AAC) using ffmpeg. Returns new filepath."""
+    if not os.path.splitext(filepath)[1].lower() in (".webm", ".opus"):
+        return filepath
+
+    m4a_path = os.path.splitext(filepath)[0] + ".m4a"
+    bitrate_k = max(64, min(320, target_bitrate // 1000))
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", filepath, "-vn", "-c:a", "aac", "-b:a", f"{bitrate_k}k", m4a_path],
+        capture_output=True, timeout=120,
+    )
+    if result.returncode == 0 and os.path.exists(m4a_path):
+        os.remove(filepath)
+        return m4a_path
+    print(f"[ffmpeg] webm->m4a conversion failed (rc={result.returncode}), keeping original", file=sys.stderr)
+    return filepath
 
 
 def _get_auth_value():
@@ -521,6 +548,9 @@ def _download_track_ytmusicapi(video_id: str, quality: str, output_dir: str):
         os.remove(filepath)
         raise RuntimeError(f"Downloaded file too small ({file_size} bytes), likely an error response")
 
+    if _has_ffmpeg():
+        filepath = _convert_webm_to_m4a(filepath, bitrate)
+
     actual_mime = {
         "mp4": "audio/mp4", "webm": "audio/webm; codecs=opus", "opus": "audio/webm; codecs=opus",
         "mp3": "audio/mp3", "flac": "audio/flac", "ogg": "audio/ogg",
@@ -666,6 +696,10 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
                     continue
 
                 abr = info.get("abr") or info.get("tbr") or 0
+
+                if _has_ffmpeg():
+                    filepath = _convert_webm_to_m4a(filepath, int(abr * 1000) if abr else 0)
+
                 actual_ext = os.path.splitext(filepath)[1].lstrip(".")
                 if is_transcode and quality.upper().startswith("MP3_"):
                     actual_ext = "mp3"
