@@ -20,6 +20,9 @@ import json
 import os
 import sys
 import tempfile
+import time
+import hashlib
+from http.cookies import SimpleCookie
 from typing import Optional
 
 try:
@@ -29,9 +32,11 @@ except ImportError as e:
     sys.exit(1)
 
 
+_YTM_ORIGIN = "https://music.youtube.com"
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 _ymusic: Optional[YTMusic] = None
+_ymusic_noauth: Optional[YTMusic] = None
 _headers_file: Optional[str] = None
 
 
@@ -55,21 +60,68 @@ def _get_auth_value():
     return None
 
 
+def _get_sapisid_from_cookie(raw_cookie: str) -> str:
+    """Extract __Secure-3PAPISID value from a raw cookie string."""
+    cookie = SimpleCookie()
+    cookie.load(raw_cookie.replace('"', ""))
+    for key in ("__Secure-3PAPISID", "SAPISID", "__Secure-1PAPISID"):
+        if key in cookie:
+            return cookie[key].value
+    return ""
+
+
+def _make_sapisidhash(sapisid: str, origin: str = _YTM_ORIGIN) -> str:
+    """Generate SAPISIDHASH authorization header value.
+    ytmusicapi requires this header to identify browser auth."""
+    sha_1 = hashlib.sha1()
+    unix_timestamp = str(int(time.time()))
+    sha_1.update((unix_timestamp + " " + sapisid + " " + origin).encode("utf-8"))
+    return f"SAPISIDHASH {unix_timestamp}_{sha_1.hexdigest()}"
+
+
 def _cookie_dict_to_headers(cookie_dict: dict) -> dict:
     """Convert a cookie name/value dict into ytmusicapi browser headers format.
 
-    ytmusicapi expects browser auth as a JSON file with HTTP headers,
-    NOT a flat dict of cookie name=value pairs. The key header is
-    "Cookie" containing the full cookie string.
+    ytmusicapi requires the headers dict to have:
+    - "cookie": full cookie string
+    - "x-goog-authuser": "0" (required by setup_browser)
+    - "authorization": SAPISIDHASH (required by determine_auth_type)
+    - "user-agent": browser user agent
+    - "origin": https://music.youtube.com
+
+    Without the "authorization" header containing SAPISIDHASH,
+    determine_auth_type() defaults to OAUTH_CUSTOM_CLIENT.
     """
+    # Already in browser-headers format
     if "Cookie" in cookie_dict or "cookie" in cookie_dict:
         out = dict(cookie_dict)
-        if "User-Agent" not in out:
-            out["User-Agent"] = _UA
+        if "user-agent" not in out and "User-Agent" not in out:
+            out["user-agent"] = _UA
+        if "origin" not in out and "x-origin" not in out:
+            out["origin"] = _YTM_ORIGIN
+        if "x-goog-authuser" not in out:
+            out["x-goog-authuser"] = "0"
+        # Generate authorization header if missing
+        if "authorization" not in out:
+            raw_cookie = out.get("cookie", out.get("Cookie", ""))
+            sapisid = _get_sapisid_from_cookie(raw_cookie)
+            if sapisid:
+                out["authorization"] = _make_sapisidhash(sapisid)
         return out
 
+    # Cookie name/value dict — convert to header string first
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
-    return {"Cookie": cookie_str, "User-Agent": _UA}
+    headers = {
+        "cookie": cookie_str,
+        "user-agent": _UA,
+        "origin": _YTM_ORIGIN,
+        "x-goog-authuser": "0",
+    }
+    # Generate authorization from cookies
+    sapisid = _get_sapisid_from_cookie(cookie_str)
+    if sapisid:
+        headers["authorization"] = _make_sapisidhash(sapisid)
+    return headers
 
 
 def _save_headers(headers: dict) -> str:
@@ -112,7 +164,6 @@ def _create_ytmusic_instance(needs_auth=False):
     # --- OAuth credentials file (pass straight through) ---
     # Heuristic: if the string contains "access_token" or "refresh_token"
     # after JSON parsing, it's an OAuth credential file / string.
-    # We only need to ensure we pass a file path (not a dict) to YTMusic.
 
     # 1) If it's an existing file path, check the format
     if os.path.isfile(auth_value):
@@ -120,21 +171,20 @@ def _create_ytmusic_instance(needs_auth=False):
             with open(auth_value) as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
-            # Not valid JSON; try passing path as-is
             return YTMusic(auth=auth_value)
 
         if not isinstance(data, dict):
-            return YTMusic(auth=auth_value)
-
-        # If already in browser-headers format, pass the file path
-        if "Cookie" in data or "cookie" in data or "User-Agent" in data:
             return YTMusic(auth=auth_value)
 
         # If it looks like an OAuth credential file, pass as-is
         if "access_token" in data or "refresh_token" in data:
             return YTMusic(auth=auth_value)
 
-        # It's a cookie name/value dict — convert to browser headers
+        # If already in browser-headers format (has authorization), pass as-is
+        if "authorization" in data:
+            return YTMusic(auth=auth_value)
+
+        # Cookie name/value dict — convert to browser headers
         headers = _cookie_dict_to_headers(data)
         path = _save_headers(headers)
         return YTMusic(auth=path)
@@ -143,13 +193,11 @@ def _create_ytmusic_instance(needs_auth=False):
     try:
         data = json.loads(auth_value)
         if isinstance(data, dict):
-            # Already in browser-headers format?
-            if "Cookie" in data or "cookie" in data:
+            if "access_token" in data or "refresh_token" in data:
                 path = _save_headers(data)
                 return YTMusic(auth=path)
 
-            # OAuth credential dict?
-            if "access_token" in data or "refresh_token" in data:
+            if "authorization" in data:
                 path = _save_headers(data)
                 return YTMusic(auth=path)
 
@@ -168,17 +216,34 @@ def _create_ytmusic_instance(needs_auth=False):
     except Exception:
         pass
 
-    # 4) Last resort — pass as-is (may be OAuth file path that doesn't exist yet)
+    # 4) Last resort — pass as-is (may fail but gives the ytmusicapi error message)
     if needs_auth:
         return YTMusic(auth=auth_value)
     return YTMusic()
 
 
 def get_ytmusic(needs_auth=False):
-    """Lazy-load the YTMusic client."""
+    """Get a YTMusic client instance.
+
+    For search/browsing operations, returns an anonymous client if auth fails.
+    For stream/auth-check operations, requires valid auth.
+    """
     global _ymusic
     if _ymusic is not None:
         return _ymusic
+    try:
+        _ymusic = _create_ytmusic_instance(needs_auth=needs_auth)
+        return _ymusic
+    except Exception:
+        if needs_auth:
+            raise
+        # Auth failed but operation doesn't require it — use anonymous
+        global _ymusic_noauth
+        if _ymusic_noauth is not None:
+            return _ymusic_noauth
+        _ymusic_noauth = YTMusic()
+        _ymusic = None
+        return _ymusic_noauth
     _ymusic = _create_ytmusic_instance(needs_auth=needs_auth)
     return _ymusic
 

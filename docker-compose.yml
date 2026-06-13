@@ -95,8 +95,10 @@ services:
       - Yandex__IncludeUnavailable=${YANDEX_INCLUDE_UNAVAILABLE_TRACKS:-false}
 
       # ===== YOUTUBE MUSIC SETTINGS =====
-      # YouTube Music auth cookie (required if using YouTubeMusic)
-      # Extract from browser cookies: https://music.youtube.com cookie named "__Secure-1PAPISID"
+      # YouTube Music auth: path to a JSON file with browser cookies (required if using YouTubeMusic)
+      # Create a JSON file with cookies exported from https://music.youtube.com
+      # Example JSON: {"__Secure-3PAPISID":"val","SAPISID":"val","__Secure-1PAPISID":"val",...}
+      # Mount the file as a volume and set this to the in-container path
       - YouTubeMusic__AuthCookie=${YTMUSIC_AUTH_COOKIE:-}
       # Preferred audio quality: FLAC, AAC_256, MP3_256, MP3_128, AAC_128, AAC_64 (optional, default: FLAC)
       - YouTubeMusic__Quality=${YTMUSIC_QUALITY:-}
@@ -108,3 +110,4 @@ services:
       - YouTubeMusic__IncludeUnavailable=${YTMUSIC_INCLUDE_UNAVAILABLE:-false}
     volumes:
       - ${DOWNLOAD_PATH:-./downloads}:/app/downloads
+      - ${YTMUSIC_COOKIE_FILE:-./ytmusic-cookies.json}:/app/ytmusic-cookies.json:ro
