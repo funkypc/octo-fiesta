@@ -1,4 +1,3 @@
-using System.Net;
 using octo_fiesta.Models.Domain;
 using octo_fiesta.Models.Settings;
 using octo_fiesta.Services.Common;
@@ -42,44 +41,33 @@ public class YouTubeMusicDownloadService : BaseDownloadService
     }
 
     /// <summary>
-    /// Parses the AuthCookie settings value into a CookieCollection for use with HTTP requests.
+    /// Parses the AuthCookie settings value into a cookie header string.
     /// Supports JSON dict format: {"__Secure-3PAPISID": "value", ...}
     /// and raw cookie string format: "key=val; key2=val2"
     /// </summary>
-    private CookieCollection ParseAuthCookies()
+    private string? BuildCookieHeader()
     {
-        var cookies = new CookieCollection();
         if (string.IsNullOrEmpty(_settings.AuthCookie))
-            return cookies;
+            return null;
 
         // Try JSON dict format first
         try
         {
             var data = JsonSerializer.Deserialize<Dictionary<string, string>>(_settings.AuthCookie);
-            if (data != null)
+            if (data != null && data.Count > 0)
             {
-                foreach (var (key, value) in data)
-                {
-                    cookies.Add(new Cookie(key, value, "/", ".youtube.com"));
-                }
-                return cookies;
+                return string.Join("; ", data.Select(kv => $"{kv.Key}={kv.Value}"));
             }
         }
         catch (JsonException) { }
 
-        // Try raw cookie string format: "key=val; key2=val2"
-        foreach (var pair in _settings.AuthCookie.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        // Already a raw cookie string
+        if (_settings.AuthCookie.Contains('=') && !_settings.AuthCookie.StartsWith('{'))
         {
-            var eqIndex = pair.IndexOf('=');
-            if (eqIndex > 0)
-            {
-                var key = pair[..eqIndex].Trim();
-                var value = pair[(eqIndex + 1)..].Trim();
-                cookies.Add(new Cookie(key, value, "/", ".youtube.com"));
-            }
+            return _settings.AuthCookie;
         }
 
-        return cookies;
+        return null;
     }
 
     public override async Task<bool> IsAvailableAsync()
@@ -119,12 +107,9 @@ public class YouTubeMusicDownloadService : BaseDownloadService
         request.Headers.Add("Origin", "https://music.youtube.com");
 
         // Add auth cookies to the request
-        var authCookies = ParseAuthCookies();
-        if (authCookies.Count > 0)
+        var cookieHeader = BuildCookieHeader();
+        if (!string.IsNullOrEmpty(cookieHeader))
         {
-            var cookieContainer = new CookieContainer();
-            cookieContainer.Add(authCookies);
-            var cookieHeader = cookieContainer.GetCookieHeader(new Uri(streamInfo.Url));
             request.Headers.Add("Cookie", cookieHeader);
         }
 
