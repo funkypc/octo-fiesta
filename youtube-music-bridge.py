@@ -454,6 +454,14 @@ def _write_netscape_cookie_file(raw_cookie: str, user_agent: str = "") -> str:
     return path
 
 
+class _YtdlpLogger:
+    """Capture yt-dlp error messages and print them to stderr."""
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg): print(f"[yt-dlp] {msg}", file=sys.stderr, flush=True)
+    def error(self, msg): print(f"[yt-dlp] ERROR: {msg}", file=sys.stderr, flush=True)
+
+
 def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
     """Use yt-dlp to extract the stream URL for a video.
     yt-dlp handles signature deciphering and n-parameter throttling."""
@@ -474,8 +482,9 @@ def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
     ydl_opts = {
         "format": quality_spec,
         "quiet": True,
-        "no_warnings": True,
         "extract_flat": False,
+        "logger": _YtdlpLogger(),
+        "extractor_args": {"youtube": {"player_client": ["web"]}},
     }
 
     # Pass auth cookies to yt-dlp if available

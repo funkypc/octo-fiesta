@@ -98,8 +98,28 @@ public class YouTubeMusicDownloadService : BaseDownloadService
         // so the download completes even if the Subsonic client disconnects.
         using var downloadCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 
-        var response = await _httpClient.GetAsync(streamInfo.Url, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token);
-        response.EnsureSuccessStatusCode();
+        HttpResponseMessage response;
+        var cookieHeader = BuildCookieHeader();
+
+        if (!string.IsNullOrEmpty(cookieHeader))
+        {
+            // Try with auth cookies first (required for premium content)
+            using var request = new HttpRequestMessage(HttpMethod.Get, streamInfo.Url);
+            request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token);
+        }
+        else
+        {
+            response = await _httpClient.GetAsync(streamInfo.Url, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(downloadCts.Token);
+            _logger.LogWarning("Download returned {StatusCode} for {TrackId}: {Body}",
+                (int)response.StatusCode, trackId, body?.Length > 300 ? body[..300] : body);
+            response.EnsureSuccessStatusCode();
+        }
 
         // Buffer the entire stream to memory so the download completes regardless
         // of whether the Subsonic client disconnects. YouTube Music tracks are
