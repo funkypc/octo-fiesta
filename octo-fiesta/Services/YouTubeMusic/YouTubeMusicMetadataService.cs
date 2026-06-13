@@ -155,8 +155,8 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
         var mainArtist = track.Artists.FirstOrDefault();
         var album = track.Album;
 
-        // Get best thumbnail
-        var thumbnails = track.Thumbnails;
+        // Get best thumbnail (Thumbnails can be null in album track responses)
+        var thumbnails = track.Thumbnails ?? new List<Models.YouTubeMusic.YouTubeMusicThumbnail>();
         var coverUrl = thumbnails.LastOrDefault()?.Url ?? thumbnails.FirstOrDefault()?.Url;
         var coverUrlLarge = thumbnails.OrderByDescending(t => t.Width).FirstOrDefault()?.Url ?? coverUrl;
 
@@ -206,8 +206,8 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     {
         var externalId = album.BrowseId ?? "";
         var mainArtist = album.Artists.FirstOrDefault();
-        var coverUrl = album.Thumbnails.LastOrDefault()?.Url ?? album.Thumbnails.FirstOrDefault()?.Url;
-        var coverUrlLarge = album.Thumbnails.OrderByDescending(t => t.Width).FirstOrDefault()?.Url ?? coverUrl;
+        var coverUrl = (album.Thumbnails ?? new List<Models.YouTubeMusic.YouTubeMusicThumbnail>()).LastOrDefault()?.Url ?? (album.Thumbnails ?? new List<Models.YouTubeMusic.YouTubeMusicThumbnail>()).FirstOrDefault()?.Url;
+        var coverUrlLarge = (album.Thumbnails ?? new List<Models.YouTubeMusic.YouTubeMusicThumbnail>()).OrderByDescending(t => t.Width).FirstOrDefault()?.Url ?? coverUrl;
 
         return new Album
         {
@@ -257,8 +257,9 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     private Artist MapArtistToArtist(Models.YouTubeMusic.YouTubeMusicArtist artist)
     {
         var externalId = artist.BrowseId ?? "";
-        var coverUrl = artist.Thumbnails.LastOrDefault()?.Url ?? artist.Thumbnails.FirstOrDefault()?.Url;
-        var coverUrlLarge = artist.Thumbnails.OrderByDescending(t => t.Width).FirstOrDefault()?.Url ?? coverUrl;
+        var artistThumbs = artist.Thumbnails ?? new List<Models.YouTubeMusic.YouTubeMusicThumbnail>();
+        var coverUrl = artistThumbs.LastOrDefault()?.Url ?? artistThumbs.FirstOrDefault()?.Url;
+        var coverUrlLarge = artistThumbs.OrderByDescending(t => t.Width).FirstOrDefault()?.Url ?? coverUrl;
 
         return new Artist
         {

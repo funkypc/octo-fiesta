@@ -285,11 +285,11 @@ def _map_track(t: dict) -> dict:
     return {
         "videoId": t.get("videoId"),
         "title": t.get("title", ""),
-        "artists": [_map_artist_item(a) for a in t.get("artists", [])],
+        "artists": [_map_artist_item(a) for a in t.get("artists") or []],
         "album": _map_album_field(t),
         "duration": t.get("duration"),
         "durationSeconds": t.get("duration_seconds"),
-        "thumbnails": t.get("thumbnails", []),
+        "thumbnails": t.get("thumbnails") or [],
         "isExplicit": t.get("isExplicit", False),
         "videoType": t.get("videoType", "song"),
         "year": t.get("year"),
@@ -302,10 +302,10 @@ def _map_album(a: dict) -> dict:
     return {
         "browseId": a.get("browseId"),
         "title": a.get("title", ""),
-        "artists": [_map_artist_item(ar) for ar in a.get("artists", [])],
+        "artists": [_map_artist_item(ar) for ar in a.get("artists") or []],
         "year": a.get("year"),
         "trackCount": a.get("trackCount"),
-        "thumbnails": a.get("thumbnails", []),
+        "thumbnails": a.get("thumbnails") or [],
         "type": a.get("type", "Album"),
     }
 
@@ -314,7 +314,7 @@ def _map_artist(ar: dict) -> dict:
     return {
         "browseId": ar.get("browseId"),
         "name": ar.get("name", ""),
-        "thumbnails": ar.get("thumbnails", []),
+        "thumbnails": ar.get("thumbnails") or [],
         "albumCount": ar.get("albumCount"),
     }
 
