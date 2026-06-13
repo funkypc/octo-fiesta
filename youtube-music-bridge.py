@@ -35,27 +35,21 @@ except ImportError as e:
 _ymusic: Optional[YTMusic] = None
 
 
-def get_ytmusic() -> YTMusic:
-    """Lazy-load the YTMusic client."""
-    global _ymusic
-    if _ymusic is not None:
-        return _ymusic
-
+def _get_auth_from_env():
+    """Try to get auth from environment or command args.
+    Returns a tuple (auth, is_cookie) where auth is either a file path,
+    a dict, or None."""
     # Try OAuth first
     oauth_creds = os.environ.get("YTMUSIC_OAUTH_CREDENTIALS")
     if oauth_creds:
-        _ymusic = YTMusic(oauth_creds)
-        return _ymusic
+        return oauth_creds, False
 
     # Try cookie string
     cookie = os.environ.get("YT_MUSIC_COOKIE")
     if cookie:
-        _ymusic = YTMusic(cookie)
-        return _ymusic
+        return cookie, True
 
     # Try --cookie or --oauth from command args
-    # We parse these ad-hoc so they can be passed anywhere in the args
-    # We'll look at the full sys.argv
     cookie = None
     oauth = None
     for i, arg in enumerate(sys.argv):
@@ -65,13 +59,84 @@ def get_ytmusic() -> YTMusic:
             oauth = sys.argv[i + 1]
 
     if oauth:
-        _ymusic = YTMusic(oauth)
-        return _ymusic
+        return oauth, False
     if cookie:
-        _ymusic = YTMusic(cookie)
-        return _ymusic
+        return cookie, True
 
-    raise RuntimeError("No authentication method configured. Set YT_MUSIC_COOKIE or YTMUSIC_OAUTH_CREDENTIALS, or pass --cookie or --oauth.")
+    return None, False
+
+
+def _create_ytmusic_instance(auth_cookie=None, needs_auth=False):
+    """Create a YTMusic instance with proper auth handling.
+    
+    Args:
+        auth_cookie: The raw cookie string or None
+        needs_auth: If True, raises error if auth is not available/valid.
+    
+    Returns:
+        YTMusic instance (authenticated or anonymous)
+    """
+    if auth_cookie is None:
+        auth_cookie, is_cookie = _get_auth_from_env()
+    else:
+        is_cookie = True
+
+    # If no auth is configured, return anonymous instance
+    if auth_cookie is None:
+        if needs_auth:
+            raise RuntimeError("No authentication method configured. Set YT_MUSIC_COOKIE or YTMUSIC_OAUTH_CREDENTIALS, or pass --cookie or --oauth.")
+        return YTMusic()
+
+    # Try to parse as JSON dict
+    try:
+        auth_dict = json.loads(auth_cookie)
+        if isinstance(auth_dict, dict):
+            return YTMusic(auth=auth_dict)
+    except json.JSONDecodeError:
+        pass
+
+    # Try as file path
+    if os.path.exists(auth_cookie):
+        return YTMusic(auth=auth_cookie)
+
+    # Try to save cookie as a JSON file for ytmusicapi
+    if is_cookie:
+        try:
+            # Create a temporary cookie file with the full cookie set
+            cookie_dict = {}
+            # If the cookie contains multiple key=value pairs, split them
+            for part in auth_cookie.split(';'):
+                part = part.strip()
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    cookie_dict[k] = v
+                else:
+                    cookie_dict[part] = True
+
+            # Create a temp file with the cookie dict
+            import tempfile
+            fd, temp_path = tempfile.mkstemp(suffix='.json', prefix='ytm_cookie_')
+            with os.fdopen(fd, 'w') as f:
+                json.dump(cookie_dict, f)
+            return YTMusic(auth=temp_path)
+        except Exception:
+            pass
+
+    # If all attempts fail, try passing the raw string as file path
+    # (might fail but gives the ytmusicapi error message)
+    if needs_auth:
+        return YTMusic(auth=auth_cookie)
+    else:
+        return YTMusic()
+
+
+def get_ytmusic(needs_auth=False):
+    """Lazy-load the YTMusic client."""
+    global _ymusic
+    if _ymusic is not None:
+        return _ymusic
+    _ymusic = _create_ytmusic_instance(needs_auth=needs_auth)
+    return _ymusic
 
 
 # ---------------------------------------------------------------------------
@@ -140,25 +205,25 @@ def _map_artist(ar: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def cmd_search_songs(query: str, limit: int):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     results = ytm.search(query, filter="songs", limit=limit)
     ok({"songs": [_map_track(t) for t in results if t.get("videoType") == "MUSIC_VIDEO_TYPE_ATV" or t.get("resultType") == "song"]})
 
 
 def cmd_search_albums(query: str, limit: int):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     results = ytm.search(query, filter="albums", limit=limit)
     ok({"albums": [_map_album(a) for a in results]})
 
 
 def cmd_search_artists(query: str, limit: int):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     results = ytm.search(query, filter="artists", limit=limit)
     ok({"artists": [_map_artist(a) for a in results]})
 
 
 def cmd_search_all(query: str, song_limit: int, album_limit: int, artist_limit: int):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     songs = ytm.search(query, filter="songs", limit=song_limit)
     albums = ytm.search(query, filter="albums", limit=album_limit)
     artists = ytm.search(query, filter="artists", limit=artist_limit)
@@ -170,7 +235,7 @@ def cmd_search_all(query: str, song_limit: int, album_limit: int, artist_limit: 
 
 
 def cmd_get_song(video_id: str):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     results = ytm.search(video_id, filter="songs", limit=5)
     song = None
     for r in results:
@@ -189,7 +254,7 @@ def cmd_get_song(video_id: str):
 
 
 def cmd_get_album(browse_id: str):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     album = ytm.get_album(browse_id)
     if not album:
         fail(f"Album not found: {browse_id}")
@@ -220,7 +285,7 @@ def cmd_get_album(browse_id: str):
 
 
 def cmd_get_artist(browse_id: str):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     artist = ytm.get_artist(browse_id)
     if not artist:
         fail(f"Artist not found: {browse_id}")
@@ -236,7 +301,7 @@ def cmd_get_artist(browse_id: str):
 
 
 def cmd_get_artist_albums(browse_id: str):
-    ytm = get_ytmusic()
+    ytm = get_ytmusic(needs_auth=False)
     artist = ytm.get_artist(browse_id)
     if not artist:
         fail(f"Artist not found: {browse_id}")
@@ -250,7 +315,8 @@ def cmd_get_artist_albums(browse_id: str):
 
 
 def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
-    ytm = get_ytmusic()
+    # Stream URL may need auth for premium quality
+    ytm = get_ytmusic(needs_auth=False)
     # Map quality to ytmusicapi signatureType
     sig_type = None
     if quality.upper() in ("FLAC", "MP3_256", "MP3_320"):
@@ -305,7 +371,7 @@ def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
 
 def cmd_check_auth():
     try:
-        ytm = get_ytmusic()
+        ytm = get_ytmusic(needs_auth=False)
         # Do a lightweight search to verify auth
         results = ytm.search("test", filter="songs", limit=1)
         ok({"authenticated": True, "searchWorks": len(results) > 0})
