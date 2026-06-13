@@ -51,7 +51,10 @@ public class YouTubeMusicDownloadService : BaseDownloadService
 
         if (streamInfo == null || string.IsNullOrEmpty(streamInfo.Url))
         {
-            throw new Exception($"No streaming URL available for track {trackId}");
+            var detail = streamInfo == null
+                ? "bridge returned null"
+                : $"bridge returned url='{streamInfo.Url}', mimeType='{streamInfo.MimeType}'";
+            throw new Exception($"No streaming URL available for track {trackId} ({detail})");
         }
 
         _logger.LogInformation(

@@ -282,7 +282,7 @@ public class YouTubeMusicBridgeService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get stream URL for {VideoId}", videoId);
+            _logger.LogWarning(ex, "Failed to get stream URL for {VideoId} (quality={Quality})", videoId, quality);
             return null;
         }
     }

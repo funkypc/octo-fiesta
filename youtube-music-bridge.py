@@ -23,6 +23,7 @@ import tempfile
 import time
 import hashlib
 from http.cookies import SimpleCookie
+from urllib.parse import parse_qs, urlparse
 from typing import Optional
 
 try:
@@ -30,6 +31,12 @@ try:
 except ImportError as e:
     print(json.dumps({"error": f"ytmusicapi not installed: {e}"}), file=sys.stderr)
     sys.exit(1)
+
+try:
+    import yt_dlp
+    _HAS_YTDLP = True
+except ImportError:
+    _HAS_YTDLP = False
 
 
 _YTM_ORIGIN = "https://music.youtube.com"
@@ -433,8 +440,156 @@ def cmd_get_artist_albums(browse_id: str):
     ok({"albums": [_map_album(a) for a in albums_list]})
 
 
+def _write_netscape_cookie_file(raw_cookie: str, user_agent: str = "") -> str:
+    """Parse a raw cookie string like 'key=val; key2=val2' and write
+    a Netscape cookie file for yt-dlp. Returns the temp file path."""
+    from http.cookies import SimpleCookie
+    fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
+    with os.fdopen(fd, "w") as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        cookie = SimpleCookie()
+        cookie.load(raw_cookie.replace('"', ""))
+        for key, morsel in cookie.items():
+            f.write(f".youtube.com\tTRUE\t/\tTRUE\t0\t{key}\t{morsel.value}\n")
+    return path
+
+
+def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
+    """Use yt-dlp to extract the stream URL for a video.
+    yt-dlp handles signature deciphering and n-parameter throttling."""
+    if not _HAS_YTDLP:
+        return None
+
+    quality_spec = {
+        "FLAC": "bestaudio",
+        "AAC_256": "bestaudio[abr<=256]",
+        "AAC_192": "bestaudio[abr<=192]",
+        "MP3_256": "bestaudio[abr<=256]",
+        "MP3_320": "bestaudio",
+        "MP3_128": "bestaudio[abr<=128]",
+        "AAC_128": "bestaudio[abr<=128]",
+        "AAC_64": "bestaudio[abr<=64]",
+    }.get(quality.upper(), "bestaudio")
+
+    ydl_opts = {
+        "format": quality_spec,
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": False,
+    }
+
+    # Pass auth cookies to yt-dlp if available
+    auth_value = _get_auth_value()
+    if auth_value:
+        try:
+            data = None
+            if os.path.isfile(auth_value):
+                with open(auth_value) as f:
+                    data = json.load(f)
+            elif auth_value.startswith("{"):
+                data = json.loads(auth_value)
+
+            if data and isinstance(data, dict):
+                # If this is browser-headers format (has "cookie" key), extract cookies
+                if "cookie" in data or "Cookie" in data:
+                    raw_cookie = data.get("cookie", data.get("Cookie", ""))
+                    ua = data.get("user-agent", data.get("User-Agent", ""))
+                    _yt_tmp_cookie = _write_netscape_cookie_file(raw_cookie, ua)
+                elif "authorization" in data:
+                    # Browser headers but no explicit cookie string — reassemble from dict
+                    raw_cookie = data.get("cookie", data.get("Cookie", ""))
+                    if raw_cookie:
+                        _yt_tmp_cookie = _write_netscape_cookie_file(raw_cookie)
+                    # Without a cookie string, yt-dlp can't auth — skip
+                else:
+                    # Cookie name/value dict — convert all entries to Netscape format
+                    fd, _yt_tmp_cookie = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookie_")
+                    with os.fdopen(fd, "w") as f:
+                        f.write("# Netscape HTTP Cookie File\n")
+                        for k, v in data.items():
+                            f.write(f".youtube.com\tTRUE\t/\tTRUE\t0\t{k}\t{v}\n")
+                ydl_opts["cookiefile"] = _yt_tmp_cookie
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://music.youtube.com/watch?v={video_id}", download=False)
+            if not info:
+                return None
+
+            # Get the best audio format directly from yt-dlp's selection
+            url = info.get("url")
+            if url:
+                mime = info.get("mime_type", "audio/mp4")
+                abr = info.get("abr") or info.get("tbr") or 0
+                return {
+                    "url": url,
+                    "mimeType": mime,
+                    "bitrate": int(abr * 1000) if abr else 0,
+                    "codec": mime.split(";")[0].replace("audio/", "") if "/" in mime else "m4a",
+                    "quality": info.get("format_note", ""),
+                    "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
+                }
+
+            # Fallback: search formats list
+            formats = info.get("formats", [])
+            audio_formats = [
+                f for f in formats
+                if f.get("acodec") != "none" and f.get("vcodec") == "none"
+            ]
+            if not audio_formats:
+                return None
+
+            audio_formats.sort(key=lambda f: f.get("abr", 0) or f.get("tbr", 0) or 0, reverse=True)
+
+            selected = audio_formats[0]
+            if quality.upper() in ("MP3_128", "AAC_64"):
+                for f in audio_formats:
+                    abr_f = f.get("abr", 0) or 0
+                    if abr_f <= 128:
+                        selected = f
+                        break
+
+            url = selected.get("url")
+            if not url:
+                return None
+
+            mime = selected.get("mime_type", "audio/mp4")
+            abr = selected.get("abr") or selected.get("tbr") or 0
+
+            return {
+                "url": url,
+                "mimeType": mime,
+                "bitrate": int(abr * 1000) if abr else 0,
+                "codec": mime.split(";")[0].replace("audio/", "") if "/" in mime else "m4a",
+                "quality": selected.get("format_note", ""),
+                "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
+            }
+    except Exception:
+        return None
+
+
+def _extract_url_from_cipher(sig_cipher: str) -> str | None:
+    """Try to extract the base URL from a signatureCipher string.
+    Returns None if the URL cannot be used without signature deciphering."""
+    from urllib.parse import unquote
+    url_part = ""
+    for part in sig_cipher.split("&"):
+        if part.startswith("url="):
+            url_part = unquote(part[4:])
+            break
+    return url_part if url_part else None
+
+
 def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
-    # Stream URLs require authentication
+    # First try yt-dlp for proper URL extraction with signature deciphering
+    result = _get_stream_url_ytdlp(video_id, quality)
+    if result and result.get("url"):
+        ok(result)
+        return
+
+    # Fallback to ytmusicapi (may return null URLs for ciphered streams)
     ytm = get_ytmusic(needs_auth=True)
     try:
         stream_info = ytm.get_song(video_id)
@@ -442,7 +597,6 @@ def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
         fail(f"Failed to get stream info: {e}")
         return
 
-    # Extract stream URL and format info
     if not stream_info or "streamingData" not in stream_info:
         fail("No streaming data available")
         return
@@ -453,27 +607,34 @@ def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
         fail("No audio formats available")
         return
 
-    # Filter audio-only formats
     audio_formats = [f for f in formats if f.get("mimeType", "").startswith("audio/")]
     if not audio_formats:
         fail("No audio-only formats available")
         return
 
-    # Sort by bitrate descending
     audio_formats.sort(key=lambda f: int(f.get("bitrate", 0)), reverse=True)
 
-    # Select based on quality preference
     selected = audio_formats[0]
     if quality.upper() in ("MP3_128", "AAC_64"):
-        # Pick lower bitrate
         for f in audio_formats:
             if int(f.get("bitrate", 0)) <= 128000:
                 selected = f
                 break
 
+    url = selected.get("url")
+    if not url:
+        # Try to extract from signatureCipher
+        sig_cipher = selected.get("signatureCipher")
+        if sig_cipher:
+            url = _extract_url_from_cipher(sig_cipher)
+
+    if not url:
+        fail("No stream URL available (yt-dlp not installed and signatureCipher requires deciphering)")
+        return
+
     ok({
         "videoId": video_id,
-        "url": selected.get("url"),
+        "url": url,
         "mimeType": selected.get("mimeType"),
         "bitrate": selected.get("bitrate"),
         "codec": selected.get("mimeType", "").split(";")[0].replace("audio/", ""),
