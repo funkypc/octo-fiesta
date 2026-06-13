@@ -421,7 +421,7 @@ def _innertube_player_request(video_id: str, client_name: str, client_version: s
         return json.loads(resp.read().decode("utf-8"))
 
 
-_ANDROIpsy_CLIENTS = [
+_ANDROID_CLIENTS = [
     # Android client returns direct URLs without cipher/signature challenges
     {"client_name": "ANDROID_MUSIC", "client_version": "7.27.51", "api_key": _INNERTUBE_API_KEY},
     # iOS client also returns direct URLs
