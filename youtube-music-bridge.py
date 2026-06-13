@@ -261,19 +261,32 @@ def fail(msg: str, code: int = 1):
     sys.exit(code)
 
 
+def _map_artist_item(a):
+    """Map a single artist entry — may be a dict {name, id} or a bare string."""
+    if isinstance(a, str):
+        return {"name": a, "id": None}
+    if isinstance(a, dict):
+        return {"name": a.get("name", ""), "id": a.get("id")}
+    return {"name": str(a), "id": None}
+
+
+def _map_album_field(t: dict):
+    """Map the album field of a track — may be a dict or a string."""
+    alb = t.get("album")
+    if alb is None:
+        return None
+    if isinstance(alb, str):
+        return {"name": alb, "id": None}
+    return {"name": alb.get("name", ""), "id": alb.get("id")}
+
+
 def _map_track(t: dict) -> dict:
     """Map a ytmusicapi track dict to a normalized bridge track."""
     return {
         "videoId": t.get("videoId"),
         "title": t.get("title", ""),
-        "artists": [{
-            "name": a.get("name", ""),
-            "id": a.get("id")
-        } for a in t.get("artists", [])],
-        "album": {
-            "name": t.get("album", {}).get("name", ""),
-            "id": t.get("album", {}).get("id")
-        } if t.get("album") else None,
+        "artists": [_map_artist_item(a) for a in t.get("artists", [])],
+        "album": _map_album_field(t),
         "duration": t.get("duration"),
         "durationSeconds": t.get("duration_seconds"),
         "thumbnails": t.get("thumbnails", []),
@@ -289,10 +302,7 @@ def _map_album(a: dict) -> dict:
     return {
         "browseId": a.get("browseId"),
         "title": a.get("title", ""),
-        "artists": [{
-            "name": ar.get("name", ""),
-            "id": ar.get("id")
-        } for ar in a.get("artists", [])],
+        "artists": [_map_artist_item(ar) for ar in a.get("artists", [])],
         "year": a.get("year"),
         "trackCount": a.get("trackCount"),
         "thumbnails": a.get("thumbnails", []),
