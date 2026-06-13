@@ -597,9 +597,12 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
     auth_value = _get_auth_value()
     cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
     
-    # Try web_music first (works with cookies), then web. 
-    # Note: "android" client is skipped because yt-dlp says it doesn't support cookies.
-    clients_to_try = ["web_music", "web"]
+    # Try cookies then non-cookie clients. With Node.js installed, yt-dlp can
+    # solve JS challenges for all clients. Without cookies, android works best.
+    if cookie_path:
+        clients_to_try = ["web_music", "web", "android"]
+    else:
+        clients_to_try = ["android", "web_music", "web"]
     last_error = None
     
     for client in clients_to_try:

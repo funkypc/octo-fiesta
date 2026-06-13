@@ -22,7 +22,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip python3-venv && \
+    apt-get install -y --no-install-recommends python3 python3-pip python3-venv nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/requirements.txt /app/requirements.txt
