@@ -71,6 +71,14 @@ _QUALITY_SPEC_MAP = {
 }
 
 
+def acodec_to_ext(acodec: str) -> str:
+    """Map an audio codec name to a file extension."""
+    return {
+        "opus": "opus", "mp4a": "m4a", "mp4a.40.2": "m4a", "mp4a.40.5": "m4a",
+        "mp3": "mp3", "vorbis": "ogg", "flac": "flac",
+    }.get(acodec, acodec)
+
+
 def _get_auth_value():
     """Get auth value from env vars or command args."""
     oauth_creds = os.environ.get("YTMUSIC_OAUTH_CREDENTIALS")
@@ -657,7 +665,6 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
                 if not filepath or not os.path.exists(filepath):
                     continue
 
-                mime = info.get("mime_type", "audio/mp4")
                 abr = info.get("abr") or info.get("tbr") or 0
                 actual_ext = os.path.splitext(filepath)[1].lstrip(".")
                 if is_transcode and quality.upper().startswith("MP3_"):
@@ -668,17 +675,38 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
                 actual_mime = {
                     "mp3": "audio/mp3", "m4a": "audio/mp4", "opus": "audio/webm; codecs=opus",
                     "flac": "audio/flac", "ogg": "audio/ogg", "wav": "audio/wav",
-                }.get(actual_ext, mime)
+                    "webm": "audio/webm; codecs=opus",
+                }.get(actual_ext, "audio/" + actual_ext)
                 if actual_ext == "mp3":
                     actual_mime = "audio/mp3"
                 elif actual_ext == "m4a":
                     actual_mime = "audio/mp4"
+                elif actual_ext == "webm":
+                    actual_mime = "audio/webm; codecs=opus"
+
+                # Extract acodec from the selected format for better codec info
+                requested_dls = info.get("requested_downloads") or []
+                if requested_dls:
+                    dl_fmt = requested_downloads[0]
+                    acodec = dl_fmt.get("acodec", "")
+                    vcodec = dl_fmt.get("vcodec", "")
+                    # If it's an audio-only format, use audio codec; use actual_ext for combined
+                    if vcodec == "none" and acodec and acodec != "none":
+                        actual_ext = acodec_to_ext(acodec)
+
+                # Extract codec from mime string: "audio/webm; codecs=opus" -> "opus"
+                if "; codecs=" in actual_mime:
+                    codec = actual_mime.split("; codecs=")[1].strip()
+                elif "/" in actual_mime:
+                    codec = actual_mime.split(";")[0].replace("audio/", "")
+                else:
+                    codec = actual_ext
 
                 return {
                     "filepath": filepath,
                     "mimeType": actual_mime,
                     "bitrate": int(abr * 1000) if abr else 0,
-                    "codec": actual_mime.split(";")[0].replace("audio/", "") if "/" in actual_mime else actual_ext,
+                    "codec": codec,
                     "quality": info.get("format_note", ""),
                     "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
                 }
@@ -854,23 +882,14 @@ def cmd_get_artist_albums(browse_id: str):
 
 def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = ""):
     """Download a track. Strategy:
-    1. ytmusicapi authenticated download (uses premium cookies, no JS needed)
-    2. yt-dlp (if available, with player_client fallbacks)
+    1. yt-dlp (primary — handles n-param decoding via JS runtime)
+    2. ytmusicapi authenticated download (fallback, uses premium cookies)
     """
     if not output_dir:
         output_dir = tempfile.gettempdir()
     os.makedirs(output_dir, exist_ok=True)
 
-    # Strategy 1: ytmusicapi authenticated download (primary — works with premium)
-    try:
-        result = _download_track_ytmusicapi(video_id, quality, output_dir)
-        if result:
-            ok(result)
-            return
-    except Exception as e:
-        print(f"[ytmusicapi] Download failed: {e}", file=sys.stderr, flush=True)
-
-    # Strategy 2: yt-dlp with player_client fallbacks
+    # Strategy 1: yt-dlp with player_client fallbacks (handles n-param/throttling)
     if _HAS_YTDLP:
         try:
             result = _download_track_ytdlp(video_id, quality, output_dir)
@@ -880,7 +899,16 @@ def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = "
         except Exception as e:
             print(f"[yt-dlp] Download failed: {e}", file=sys.stderr, flush=True)
 
-    fail("All download methods failed (ytmusicapi failed, yt-dlp failed or unavailable)")
+    # Strategy 2: ytmusicapi authenticated download (fallback)
+    try:
+        result = _download_track_ytmusicapi(video_id, quality, output_dir)
+        if result:
+            ok(result)
+            return
+    except Exception as e:
+        print(f"[ytmusicapi] Download failed: {e}", file=sys.stderr, flush=True)
+
+    fail("All download methods failed (yt-dlp failed, ytmusicapi failed or unavailable)")
 
 
 def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
