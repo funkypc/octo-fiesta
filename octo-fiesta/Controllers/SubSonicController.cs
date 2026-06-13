@@ -156,12 +156,14 @@ public class SubsonicController : ControllerBase
         // This ensures quality upgrade logic is applied
         try
         {
-            // Allow cancellation from both client disconnect and application shutdown
-            using var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
-                HttpContext.RequestAborted,
+            // Download phase: use only application-stopping token (NOT RequestAborted)
+            // because downloads (especially YouTube Music) can take 30+ seconds
+            // and the client may disconnect before the download completes.
+            // Downloaded files are cached on disk for subsequent requests.
+            using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(
                 _hostApplicationLifetime.ApplicationStopping);
 
-            var (downloadStream, filePath) = await _downloadService.DownloadAndStreamAsync(provider!, externalId!, cancellationTokenSource.Token);
+            var (downloadStream, filePath) = await _downloadService.DownloadAndStreamAsync(provider!, externalId!, downloadCts.Token);
             return File(downloadStream, GetContentType(filePath), enableRangeProcessing: true);
         }
         catch (Exception ex)
