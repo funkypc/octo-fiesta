@@ -53,7 +53,9 @@ _ymusic: Optional[YTMusic] = None
 _ymusic_noauth: Optional[YTMusic] = None
 _headers_file: Optional[str] = None
 
-_INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+_INNERTUBE_WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+_INNERTUBE_ANDROID_KEY = "AIzaSyA8eiZmM1FaDVjRy-df2KpyQ6MZjLow5CA"
+_INNERTUBE_MUSIC_KEY = "AIzaSyC2MYd4YRmLOd5R2LH7kqWq0sPkIeb-6CY"
 
 _QUALITY_SPEC_MAP = {
     "FLAC": "bestaudio",
@@ -375,13 +377,11 @@ def _get_download_headers():
 
 
 def _innertube_player_request(video_id: str, client_name: str, client_version: str,
-                               api_key: str, auth_value: str):
+                               api_key: str, auth_value: str, endpoint: str,
+                               extra_client_fields: dict = None):
     """Make a direct innertube player API request.
     
-    Uses pure HTTP to call YouTube's /youtubei/v1/player endpoint with
-    the specified client context. Android and iOS clients return direct
-    streaming URLs without signature/cipher challenges, bypassing the
-    need for JavaScript-based signature solving.
+    Returns the parsed JSON response or raises on HTTP error.
     """
     cookie_str = _parse_auth_to_cookie_string(auth_value) if auth_value else None
     sapisid = _get_sapisid_from_cookie(cookie_str) if cookie_str else ""
@@ -390,30 +390,39 @@ def _innertube_player_request(video_id: str, client_name: str, client_version: s
         "Content-Type": "application/json",
         "User-Agent": _UA,
         "Origin": _YTM_ORIGIN,
-        "Referer": _YTM_ORIGIN + "/",
     }
+    
+    if "music.youtube.com" in endpoint:
+        headers["Referer"] = _YTM_ORIGIN + "/"
+    else:
+        headers["Referer"] = "https://www.youtube.com/"
     
     if cookie_str:
         headers["Cookie"] = cookie_str
     if sapisid:
-        headers["Authorization"] = _make_sapisidhash(sapisid, _YTM_ORIGIN)
+        origin = _YTM_ORIGIN if "music.youtube.com" in endpoint else "https://www.youtube.com"
+        headers["Authorization"] = _make_sapisidhash(sapisid, origin)
+    
+    client_fields = {
+        "clientName": client_name,
+        "clientVersion": client_version,
+        "hl": "en",
+        "gl": "US",
+    }
+    if extra_client_fields:
+        client_fields.update(extra_client_fields)
     
     body = {
         "videoId": video_id,
         "context": {
-            "client": {
-                "clientName": client_name,
-                "clientVersion": client_version,
-                "hl": "en",
-                "gl": "US",
-            },
+            "client": client_fields,
             "user": {},
         },
         "contentCheckOk": True,
         "racyCheckOk": True,
     }
     
-    url = f"https://music.youtube.com/youtubei/v1/player?key={api_key}&prettyPrint=false"
+    url = f"{endpoint}?key={api_key}&prettyPrint=false"
     
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers)
     
@@ -421,27 +430,54 @@ def _innertube_player_request(video_id: str, client_name: str, client_version: s
         return json.loads(resp.read().decode("utf-8"))
 
 
-_ANDROID_CLIENTS = [
-    # Android client returns direct URLs without cipher/signature challenges
-    {"client_name": "ANDROID_MUSIC", "client_version": "7.27.51", "api_key": _INNERTUBE_API_KEY},
-    # iOS client also returns direct URLs
-    {"client_name": "IOS_MUSIC", "client_version": "7.27.51", "api_key": _INNERTUBE_API_KEY},
-    # Web Music client as fallback (may need n-param solving but works with cookies)
-    {"client_name": "WEB_REMIX", "client_version": "1.46.13", "api_key": _INNERTUBE_API_KEY},
+_INNERTUBE_CLIENTS = [
+    # Android Music client: returns direct URLs without signature/cipher challenges
+    # Uses www.youtube.com endpoint; no JS runtime needed for n-param deobfuscation
+    {
+        "client_name": "ANDROID_MUSIC",
+        "client_version": "7.27.51",
+        "api_key": _INNERTUBE_ANDROID_KEY,
+        "endpoint": "https://www.youtube.com/youtubei/v1/player",
+        "extra_client_fields": {"androidSdkVersion": 30},
+    },
+    # Android client: also returns direct URLs
+    {
+        "client_name": "ANDROID",
+        "client_version": "19.02.39",
+        "api_key": _INNERTUBE_ANDROID_KEY,
+        "endpoint": "https://www.youtube.com/youtubei/v1/player",
+        "extra_client_fields": {"androidSdkVersion": 30},
+    },
+    # iOS Music client
+    {
+        "client_name": "IOS_MUSIC",
+        "client_version": "7.27.51",
+        "api_key": _INNERTUBE_MUSIC_KEY,
+        "endpoint": "https://music.youtube.com/youtubei/v1/player",
+        "extra_client_fields": None,
+    },
+    # WEB_REMIX (YouTube Music web) — may need n-param but works with cookies
+    {
+        "client_name": "WEB_REMIX",
+        "client_version": "1.46.13",
+        "api_key": _INNERTUBE_MUSIC_KEY,
+        "endpoint": "https://music.youtube.com/youtubei/v1/player",
+        "extra_client_fields": None,
+    },
 ]
 
 
 def _download_track_innertube(video_id: str, quality: str, output_dir: str):
     """Download a track using the innertube player API directly.
     
-    Tries multiple client contexts (ANDROID_MUSIC, IOS_MUSIC, WEB_REMIX)
+    Tries multiple client contexts (ANDROID_MUSIC, ANDROID, IOS_MUSIC, WEB_REMIX)
     to get streaming URLs. Android/iOS clients return direct URLs that
     don't need JavaScript-based signature solving.
     """
     auth_value = _get_auth_value()
     
     last_error = None
-    for client_cfg in _ANDROID_CLIENTS:
+    for client_cfg in _INNERTUBE_CLIENTS:
         try:
             player_resp = _innertube_player_request(
                 video_id,
@@ -449,6 +485,8 @@ def _download_track_innertube(video_id: str, quality: str, output_dir: str):
                 client_cfg["client_version"],
                 client_cfg["api_key"],
                 auth_value,
+                client_cfg["endpoint"],
+                client_cfg.get("extra_client_fields"),
             )
         except urllib.error.HTTPError as e:
             last_error = e
@@ -648,8 +686,9 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
     auth_value = _get_auth_value()
     cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
     
-    # Try android client first (no JS needed), then web_music, then web
-    clients_to_try = ["android", "web_music", "web"]
+    # Try web_music first (works with cookies), then web. 
+    # Note: "android" client is skipped because yt-dlp says it doesn't support cookies.
+    clients_to_try = ["web_music", "web"]
     last_error = None
     
     for client in clients_to_try:

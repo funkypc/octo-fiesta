@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from youtube_music_bridge import (
     _get_auth_value, _get_download_headers, _download_track_innertube,
-    _HAS_YTDLP, _download_track_ytdlp,
+    _HAS_YTDLP, _download_track_ytdlp, _INNERTUBE_CLIENTS,
 )
 
 
