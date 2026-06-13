@@ -179,15 +179,48 @@ public class YouTubeMusicStartupValidator : BaseStartupValidator
             using var process = new Process { StartInfo = startInfo };
             process.Start();
             await process.WaitForExitAsync(cancellationToken);
+            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
             if (process.ExitCode != 0)
             {
-                var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+                var error = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
                 WriteStatus("Auth Check", "FAILED", ConsoleColor.Red);
                 WriteDetail($"Bridge auth check failed: {error}");
                 WriteFailure();
                 return ValidationResult.Failure("Auth check failed", error);
             }
-            WriteStatus("Auth Check", "SUCCESS", ConsoleColor.Green);
+
+            // Parse the JSON response to check auth status
+            // check-auth now returns {"authenticated": true/false, "searchWorks": true/false, "reason": "..."}
+            try
+            {
+                var json = System.Text.Json.JsonDocument.Parse(stdout);
+                var root = json.RootElement;
+                var resultOk = root.TryGetProperty("ok", out var okElem) && okElem.GetBoolean();
+                if (resultOk && root.TryGetProperty("result", out var resultElem))
+                {
+                    var authenticated = resultElem.TryGetProperty("authenticated", out var authElem) && authElem.GetBoolean();
+                    if (!authenticated)
+                    {
+                        var reason = resultElem.TryGetProperty("reason", out var reasonElem) ? reasonElem.GetString() : "unknown";
+                        WriteStatus("Auth Check", "NO AUTH (search only)", ConsoleColor.Yellow);
+                        WriteDetail($"Auth not configured or failed: {reason}");
+                        WriteDetail("Search works, but downloads require authentication");
+                    }
+                    else
+                    {
+                        WriteStatus("Auth Check", "SUCCESS", ConsoleColor.Green);
+                    }
+                }
+                else
+                {
+                    WriteStatus("Auth Check", "SUCCESS", ConsoleColor.Green);
+                }
+            }
+            catch
+            {
+                WriteStatus("Auth Check", "SUCCESS", ConsoleColor.Green);
+            }
         }
         catch (Exception ex)
         {

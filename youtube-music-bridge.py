@@ -434,14 +434,8 @@ def cmd_get_artist_albums(browse_id: str):
 
 
 def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
-    # Stream URL may need auth for premium quality
-    ytm = get_ytmusic(needs_auth=False)
-    # Map quality to ytmusicapi signatureType
-    sig_type = None
-    if quality.upper() in ("FLAC", "MP3_256", "MP3_320"):
-        sig_type = "signatureCipher"
-    else:
-        sig_type = "signatureCipher"
+    # Stream URLs require authentication
+    ytm = get_ytmusic(needs_auth=True)
     try:
         stream_info = ytm.get_song(video_id)
     except Exception as e:
@@ -489,13 +483,16 @@ def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
 
 
 def cmd_check_auth():
+    auth_value = _get_auth_value()
+    if auth_value is None:
+        ok({"authenticated": False, "searchWorks": True, "reason": "No auth configured (search works anonymously)"})
+        return
     try:
-        ytm = get_ytmusic(needs_auth=False)
-        # Do a lightweight search to verify auth
+        ytm = get_ytmusic(needs_auth=True)
         results = ytm.search("test", filter="songs", limit=1)
         ok({"authenticated": True, "searchWorks": len(results) > 0})
     except Exception as e:
-        fail(f"Auth check failed: {e}")
+        ok({"authenticated": False, "searchWorks": False, "reason": str(e)})
 
 
 # ---------------------------------------------------------------------------
