@@ -98,22 +98,7 @@ public class YouTubeMusicDownloadService : BaseDownloadService
         // so the download completes even if the Subsonic client disconnects.
         using var downloadCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 
-        // Build request with auth cookies for YouTube CDN
-        using var request = new HttpRequestMessage(HttpMethod.Get, streamInfo.Url);
-        request.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
-        request.Headers.Add("Accept", "*/*");
-        request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
-        request.Headers.Add("Referer", "https://music.youtube.com/");
-        request.Headers.Add("Origin", "https://music.youtube.com");
-
-        // Add auth cookies to the request
-        var cookieHeader = BuildCookieHeader();
-        if (!string.IsNullOrEmpty(cookieHeader))
-        {
-            request.Headers.Add("Cookie", cookieHeader);
-        }
-
-        var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token);
+        var response = await _httpClient.GetAsync(streamInfo.Url, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token);
         response.EnsureSuccessStatusCode();
 
         // Buffer the entire stream to memory so the download completes regardless
