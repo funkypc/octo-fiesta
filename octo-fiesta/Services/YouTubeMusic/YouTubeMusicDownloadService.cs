@@ -47,6 +47,8 @@ public class YouTubeMusicDownloadService : BaseDownloadService
     protected override async Task<DownloadResult> DownloadTrackAsync(string trackId, Song song, CancellationToken cancellationToken)
     {
         var quality = _settings.Quality ?? "FLAC";
+        // Check for cancellation before starting the slow bridge call
+        cancellationToken.ThrowIfCancellationRequested();
         var streamInfo = await _bridge.GetStreamUrlAsync(trackId, quality);
 
         if (streamInfo == null || string.IsNullOrEmpty(streamInfo.Url))
@@ -61,10 +63,22 @@ public class YouTubeMusicDownloadService : BaseDownloadService
             "Downloading track {TrackId} from YouTube Music: {Url} (codec={Codec}, bitrate={Bitrate})",
             trackId, streamInfo.Url, streamInfo.Codec, streamInfo.Bitrate);
 
-        var response = await _httpClient.GetAsync(streamInfo.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        // Use a separate CancellationTokenSource with a generous timeout for the actual download,
+        // so the download completes even if the Subsonic client disconnects.
+        // The caller's token is checked before starting, but the download itself runs independently.
+        using var downloadCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+
+        var response = await _httpClient.GetAsync(streamInfo.Url, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token);
         response.EnsureSuccessStatusCode();
 
-        var responseStream = await HttpResponseStream.CreateAsync(response, cancellationToken);
+        // Buffer the entire stream to memory so the download completes regardless
+        // of whether the Subsonic client disconnects. YouTube Music tracks are
+        // typically 3-15 MB so this is safe.
+        var memoryStream = new MemoryStream();
+        await using var networkStream = await HttpResponseStream.CreateAsync(response, downloadCts.Token);
+        await networkStream.CopyToAsync(memoryStream, downloadCts.Token);
+        memoryStream.Position = 0;
+
         var extension = YouTubeMusicQuality.MimeTypeToExtension(streamInfo.MimeType);
         var downloadedQuality = YouTubeMusicQuality.FromApiParams(streamInfo.MimeType, streamInfo.Bitrate);
 
@@ -75,7 +89,7 @@ public class YouTubeMusicDownloadService : BaseDownloadService
             mp4Duration = streamInfo.DurationMs / 1000.0;
         }
 
-        return new DownloadResult(responseStream, extension, downloadedQuality, mp4Duration);
+        return new DownloadResult(memoryStream, extension, downloadedQuality, mp4Duration);
     }
 
     protected override string? ExtractExternalIdFromAlbumId(string albumId)
