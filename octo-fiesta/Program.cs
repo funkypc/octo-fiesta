@@ -6,6 +6,7 @@ using octo_fiesta.Services.SquidWTF;
 using octo_fiesta.Services.Yandex;
 using octo_fiesta.Services.YouTubeMusic;
 using octo_fiesta.Services.Local;
+using octo_fiesta.Services.Lyrics;
 using octo_fiesta.Services.Validation;
 using octo_fiesta.Services.Subsonic;
 using octo_fiesta.Services.Common;
@@ -38,6 +39,8 @@ builder.Services.Configure<YandexSettings>(
     builder.Configuration.GetSection("Yandex"));
 builder.Services.Configure<YouTubeMusicSettings>(
     builder.Configuration.GetSection("YouTubeMusic"));
+builder.Services.Configure<LyricsSettings>(
+    builder.Configuration.GetSection("Lyrics"));
 
 // Get the configured music service from bound settings (to respect default values)
 var subsonicSettings = new SubsonicSettings();
@@ -54,6 +57,18 @@ builder.Services.AddSingleton<SubsonicRequestParser>();
 builder.Services.AddSingleton<SubsonicResponseBuilder>();
 builder.Services.AddSingleton<SubsonicModelMapper>();
 builder.Services.AddScoped<SubsonicProxyService>();
+
+// Lyrics lookup (LRCLIB). Always registered; gated at runtime by Lyrics:Enabled.
+var lyricsSettings = new LyricsSettings();
+builder.Configuration.GetSection("Lyrics").Bind(lyricsSettings);
+builder.Services.AddSingleton<ILyricsService, LrclibLyricsService>();
+builder.Services.AddHttpClient(LrclibLyricsService.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(lyricsSettings.TimeoutSeconds);
+    // LRCLIB etiquette: identify the app with a contact/repo URL.
+    client.DefaultRequestHeaders.UserAgent.ParseAdd(
+        "octo-fiesta (https://github.com/V1ck3s/octo-fiesta)");
+});
 
 // Register music service based on configuration
 // IMPORTANT: Primary service MUST be registered LAST because ASP.NET Core DI
@@ -77,8 +92,8 @@ else if (musicService == MusicService.SquidWTF)
 {
     var squidWtfSource = builder.Configuration.GetValue<string>("SquidWTF:Source") ?? "Qobuz";
     var isTidalSource = squidWtfSource.Equals("Tidal", StringComparison.OrdinalIgnoreCase);
-    
-    // Only enable playlists for Tidal source (Qobuz doesn't support playlists via SquidWTF)
+
+    // Only Tidal source supports playlists via SquidWTF; Qobuz and Amazon Music do not
     if (enableExternalPlaylists && isTidalSource)
     {
         builder.Services.AddSingleton<PlaylistSyncService>();
