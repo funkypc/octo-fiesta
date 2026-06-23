@@ -698,7 +698,20 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
                 abr = info.get("abr") or info.get("tbr") or 0
 
                 if _has_ffmpeg():
-                    filepath = _convert_webm_to_m4a(filepath, int(abr * 1000) if abr else 0)
+                    if filepath.lower().endswith(".webm"):
+                        # Extract stream to .opus container (stream copy instead of transcode)
+                        opus_path = os.path.splitext(filepath)[0] + ".opus"
+                        result = subprocess.run(
+                            ["ffmpeg", "-y", "-i", filepath, "-vn", "-c:a", "copy", opus_path],
+                            capture_output=True, timeout=60,
+                        )
+                        if result.returncode == 0 and os.path.exists(opus_path):
+                            os.remove(filepath)
+                            filepath = opus_path
+                        else:
+                            filepath = _convert_webm_to_m4a(filepath, int(abr * 1000) if abr else 0)
+                    else:
+                        filepath = _convert_webm_to_m4a(filepath, int(abr * 1000) if abr else 0)
 
                 actual_ext = os.path.splitext(filepath)[1].lstrip(".")
                 if is_transcode and quality.upper().startswith("MP3_"):
