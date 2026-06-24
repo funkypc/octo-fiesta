@@ -100,6 +100,10 @@ public class YouTubeMusicBridgeService
             {
                 outputBuffer.AppendLine(e.Data);
             }
+            else
+            {
+                outputTcs.TrySetResult(outputBuffer.ToString());
+            }
         };
 
         process.ErrorDataReceived += (sender, e) =>
@@ -108,15 +112,12 @@ public class YouTubeMusicBridgeService
             {
                 errorBuffer.AppendLine(e.Data);
             }
+            else
+            {
+                errorTcs.TrySetResult(errorBuffer.ToString());
+            }
         };
 
-        process.Exited += (sender, e) =>
-        {
-            outputTcs.TrySetResult(outputBuffer.ToString());
-            errorTcs.TrySetResult(errorBuffer.ToString());
-        };
-
-        process.EnableRaisingEvents = true;
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
@@ -135,6 +136,8 @@ public class YouTubeMusicBridgeService
 
         var output = await outputTcs.Task;
         var error = await errorTcs.Task;
+
+        await process.WaitForExitAsync();
 
         _logger.LogDebug("Bridge output: {Output}", output);
         if (!string.IsNullOrWhiteSpace(error))
