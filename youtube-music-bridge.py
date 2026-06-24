@@ -651,6 +651,7 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
             "logger": _YtdlpLogger(),
             "extractor_args": {"youtube": {"player_client": [client]}},
             "postprocessors": [],
+            "js_runtimes": {"node": {}},
         }
 
         if cookie_path:
@@ -777,6 +778,7 @@ def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
             "extract_flat": False,
             "logger": _YtdlpLogger(),
             "extractor_args": {"youtube": {"player_client": [client]}},
+            "js_runtimes": {"node": {}},
         }
         cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
         if cookie_path:
