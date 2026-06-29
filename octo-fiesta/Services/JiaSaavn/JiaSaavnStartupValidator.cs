@@ -28,12 +28,13 @@ public class JiaSaavnStartupValidator : BaseStartupValidator
 
         var quality = _settings.Quality ?? "320";
 
-        WriteStatus("JiaSaavn Base URL", _settings.BaseUrl, ConsoleColor.Cyan);
+        WriteStatus("JiaSaavn Search API", _settings.SearchApiUrl, ConsoleColor.Cyan);
+        WriteStatus("JiaSaavn Detail API", _settings.DetailApiUrl, ConsoleColor.Cyan);
         WriteStatus("JiaSaavn Quality", $"{quality} kbps", ConsoleColor.Cyan);
 
         try
         {
-            var response = await _httpClient.GetAsync($"{_settings.BaseUrl}/api/songs?q=test", cancellationToken);
+            var response = await _httpClient.GetAsync($"{_settings.SearchApiUrl}/api/songs?q=test", cancellationToken);
 
             if (response.IsSuccessStatusCode)
             {

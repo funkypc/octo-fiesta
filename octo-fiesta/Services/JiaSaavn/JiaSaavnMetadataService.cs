@@ -36,9 +36,13 @@ public class JiaSaavnMetadataService : IMusicMetadataService
     {
         try
         {
-            var url = $"{_settings.BaseUrl}/api/songs?q={Uri.EscapeDataString(query)}";
+            var url = $"{_settings.SearchApiUrl}/api/songs?q={Uri.EscapeDataString(query)}";
             var response = await _httpClient.GetAsync(url);
-            if (!response.IsSuccessStatusCode) return new List<Song>();
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("JiaSaavn song search returned {StatusCode} for {Url}", response.StatusCode, url);
+                return new List<Song>();
+            }
 
             var json = await response.Content.ReadAsStringAsync();
             var searchResponse = JsonSerializer.Deserialize<JiaSaavnSearchResponse>(json);
@@ -64,9 +68,13 @@ public class JiaSaavnMetadataService : IMusicMetadataService
     {
         try
         {
-            var url = $"{_settings.BaseUrl}/api/albums?q={Uri.EscapeDataString(query)}";
+            var url = $"{_settings.SearchApiUrl}/api/albums?q={Uri.EscapeDataString(query)}";
             var response = await _httpClient.GetAsync(url);
-            if (!response.IsSuccessStatusCode) return new List<Album>();
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("JiaSaavn album search returned {StatusCode} for {Url}", response.StatusCode, url);
+                return new List<Album>();
+            }
 
             var json = await response.Content.ReadAsStringAsync();
             var searchResponse = JsonSerializer.Deserialize<JiaSaavnSearchResponse>(json);
@@ -146,9 +154,13 @@ public class JiaSaavnMetadataService : IMusicMetadataService
 
         try
         {
-            var url = $"{_settings.BaseUrl}/song?url={Uri.EscapeDataString(externalId)}";
+            var url = $"{_settings.DetailApiUrl}/song?url={Uri.EscapeDataString(externalId)}";
             var response = await _httpClient.GetAsync(url);
-            if (!response.IsSuccessStatusCode) return null;
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("JiaSaavn song detail returned {StatusCode} for {Url}", response.StatusCode, url);
+                return null;
+            }
 
             var json = await response.Content.ReadAsStringAsync();
             var song = JsonSerializer.Deserialize<JiaSaavnSong>(json);
@@ -169,9 +181,13 @@ public class JiaSaavnMetadataService : IMusicMetadataService
 
         try
         {
-            var url = $"{_settings.BaseUrl}/album?url={Uri.EscapeDataString(externalId)}";
+            var url = $"{_settings.DetailApiUrl}/album?url={Uri.EscapeDataString(externalId)}";
             var response = await _httpClient.GetAsync(url);
-            if (!response.IsSuccessStatusCode) return null;
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("JiaSaavn album detail returned {StatusCode} for {Url}", response.StatusCode, url);
+                return null;
+            }
 
             var json = await response.Content.ReadAsStringAsync();
             var album = JsonSerializer.Deserialize<JiaSaavnAlbumDetail>(json);

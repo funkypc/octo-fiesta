@@ -2,15 +2,20 @@ namespace octo_fiesta.Models.Settings;
 
 /// <summary>
 /// Configuration for the JiaSaavn downloader and metadata service
-/// Powered by SquidWTF-hosted JiaSaavn API
 /// </summary>
 public class JiaSaavnSettings
 {
     /// <summary>
-    /// Base URL for the JiaSaavn API
-    /// Default: https://saavn.squid.wtf
+    /// Base URL for the JiaSaavn search API (songs and albums search)
+    /// Default: https://js-odskyler.vercel.app
     /// </summary>
-    public string BaseUrl { get; set; } = "https://saavn.squid.wtf";
+    public string SearchApiUrl { get; set; } = "https://js-odskyler.vercel.app";
+
+    /// <summary>
+    /// Base URL for the JiaSaavn detail API (song and album lookups by URL)
+    /// Default: https://sda.rhythmax.workers.dev
+    /// </summary>
+    public string DetailApiUrl { get; set; } = "https://sda.rhythmax.workers.dev";
 
     /// <summary>
     /// Preferred audio quality: 320, 160, 96, 48, 12 (kbps)

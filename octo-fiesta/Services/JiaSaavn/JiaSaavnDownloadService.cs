@@ -46,7 +46,7 @@ public class JiaSaavnDownloadService : BaseDownloadService
     {
         try
         {
-            var response = await _httpClient.GetAsync($"{_settings.BaseUrl}/api/songs?q=test");
+            var response = await _httpClient.GetAsync($"{_settings.SearchApiUrl}/api/songs?q=test");
             return response.IsSuccessStatusCode;
         }
         catch (Exception ex)
@@ -74,7 +74,7 @@ public class JiaSaavnDownloadService : BaseDownloadService
     protected override async Task<DownloadResult> DownloadTrackAsync(string trackId, Song song, CancellationToken cancellationToken)
     {
         // Fetch full song details to obtain encrypted_media_url
-        var detailUrl = $"{_settings.BaseUrl}/song?url={Uri.EscapeDataString(trackId)}";
+        var detailUrl = $"{_settings.DetailApiUrl}/song?url={Uri.EscapeDataString(trackId)}";
         var detailResponse = await _httpClient.GetAsync(detailUrl, cancellationToken);
         detailResponse.EnsureSuccessStatusCode();
 
