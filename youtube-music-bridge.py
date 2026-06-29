@@ -62,9 +62,11 @@ def _maybe_auto_update_packages():
     invocation (already-imported modules are not reloaded).
     """
     try:
-        interval_h = float(os.environ.get("YTMUSIC_AUTO_UPDATE_HOURS", "24"))
+        # Default to disabled (0) because pip upgrades can take 10-20 s and block
+        # every invocation. Users who want auto-updates can set e.g. 168 (weekly).
+        interval_h = float(os.environ.get("YTMUSIC_AUTO_UPDATE_HOURS", "0"))
     except ValueError:
-        interval_h = 24.0
+        interval_h = 0.0
     if interval_h <= 0:
         return
 
@@ -107,6 +109,44 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 _ymusic: Optional[YTMusic] = None
 _ymusic_noauth: Optional[YTMusic] = None
 _headers_file: Optional[str] = None
+
+# ---------------------------------------------------------------------------
+# Simple on-disk caches (persist across short-lived CLI invocations)
+# ---------------------------------------------------------------------------
+
+def _cache_dir() -> str:
+    d = os.path.join(tempfile.gettempdir(), "ytm_bridge_cache")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _cache_path(name: str) -> str:
+    return os.path.join(_cache_dir(), name)
+
+
+def _load_cache(name: str, ttl_seconds: float):
+    path = _cache_path(name)
+    try:
+        if os.path.exists(path) and (time.time() - os.path.getmtime(path)) < ttl_seconds:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _save_cache(name: str, data: dict):
+    path = _cache_path(name)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _cache_key(*parts: str) -> str:
+    h = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    return h
 
 _QUALITY_SPEC_MAP = {
     "FLAC": "bestaudio/best",
@@ -359,8 +399,6 @@ def get_ytmusic(needs_auth=False):
         _ymusic_noauth = YTMusic()
         _ymusic = None
         return _ymusic_noauth
-    _ymusic = _create_ytmusic_instance(needs_auth=needs_auth)
-    return _ymusic
 
 
 # ---------------------------------------------------------------------------
@@ -683,12 +721,9 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
     auth_value = _get_auth_value()
     cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
     
-    # Try cookies then non-cookie clients. With Node.js installed, yt-dlp can
-    # solve JS challenges for all clients. Without cookies, android works best.
-    if cookie_path:
-        clients_to_try = ["web_music", "web", "android"]
-    else:
-        clients_to_try = ["android", "web_music", "web"]
+    # Use android first (fastest, minimal JS challenges) then web_music.
+    # "web" client often requires expensive JS signature deciphering.
+    clients_to_try = ["android", "web_music"]
     last_error = None
     
     for client in clients_to_try:
@@ -699,7 +734,6 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
             "logger": _YtdlpLogger(),
             "extractor_args": {"youtube": {"player_client": [client]}},
             "postprocessors": [],
-            "js_runtimes": {"node": {}},
         }
 
         if cookie_path:
@@ -813,22 +847,22 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
 
 
 def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
-    """Use yt-dlp to extract the stream URL for a video."""
+    """Use yt-dlp to extract the stream URL for a video.
+    Tries android (fastest, minimal JS) then web_music."""
     if not _HAS_YTDLP:
         return None
 
     auth_value = _get_auth_value()
+    cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
 
-    for client in ["android", "web_music", "web"]:
+    for client in ["android", "web_music"]:
         ydl_opts = {
             "format": _QUALITY_SPEC_MAP.get(quality.upper(), "bestaudio"),
             "quiet": True,
             "extract_flat": False,
             "logger": _YtdlpLogger(),
             "extractor_args": {"youtube": {"player_client": [client]}},
-            "js_runtimes": {"node": {}},
         }
-        cookie_path = _build_ytdlp_cookie_path(auth_value) if auth_value else None
         if cookie_path:
             ydl_opts["cookiefile"] = cookie_path
 
@@ -882,38 +916,104 @@ def _extract_url_from_cipher(sig_cipher: str) -> str | None:
 # Commands
 # ---------------------------------------------------------------------------
 
-def cmd_search_songs(query: str, limit: int):
+def _cached_search(name: str, query: str, limit: int, searcher):
+    """Run a search with a short-lived on-disk cache."""
+    cache_key = f"{name}_{_cache_key(query, str(limit))}"
+    cached = _load_cache(cache_key, ttl_seconds=120)
+    if cached is not None:
+        ok(cached)
+        return cached
+
     ytm = get_ytmusic(needs_auth=False)
-    results = ytm.search(query, filter="songs", limit=limit)
-    ok({"songs": [_map_track(t) for t in results if t.get("videoType") == "MUSIC_VIDEO_TYPE_ATV" or t.get("resultType") == "song"]})
+    result = searcher(ytm)
+    _save_cache(cache_key, result)
+    ok(result)
+    return result
+
+
+def cmd_search_songs(query: str, limit: int):
+    def do_search(ytm):
+        results = ytm.search(query, filter="songs", limit=limit)
+        return {"songs": [_map_track(t) for t in results if t.get("videoType") == "MUSIC_VIDEO_TYPE_ATV" or t.get("resultType") == "song"]}
+    _cached_search("songs", query, limit, do_search)
 
 
 def cmd_search_albums(query: str, limit: int):
-    ytm = get_ytmusic(needs_auth=False)
-    results = ytm.search(query, filter="albums", limit=limit)
-    ok({"albums": [_map_album(a) for a in results]})
+    def do_search(ytm):
+        results = ytm.search(query, filter="albums", limit=limit)
+        return {"albums": [_map_album(a) for a in results]}
+    _cached_search("albums", query, limit, do_search)
 
 
 def cmd_search_artists(query: str, limit: int):
-    ytm = get_ytmusic(needs_auth=False)
-    results = ytm.search(query, filter="artists", limit=limit)
-    ok({"artists": [_map_artist(a) for a in results]})
+    def do_search(ytm):
+        results = ytm.search(query, filter="artists", limit=limit)
+        return {"artists": [_map_artist(a) for a in results]}
+    _cached_search("artists", query, limit, do_search)
 
 
 def cmd_search_all(query: str, song_limit: int, album_limit: int, artist_limit: int):
+    cache_key = f"all_{_cache_key(query, str(song_limit), str(album_limit), str(artist_limit))}"
+    cached = _load_cache(cache_key, ttl_seconds=120)
+    if cached is not None:
+        ok(cached)
+        return
+
     ytm = get_ytmusic(needs_auth=False)
     songs = ytm.search(query, filter="songs", limit=song_limit)
     albums = ytm.search(query, filter="albums", limit=album_limit)
     artists = ytm.search(query, filter="artists", limit=artist_limit)
-    ok({
+    result = {
         "songs": [_map_track(t) for t in songs if t.get("videoType") == "MUSIC_VIDEO_TYPE_ATV" or t.get("resultType") == "song"],
         "albums": [_map_album(a) for a in albums],
         "artists": [_map_artist(a) for a in artists],
-    })
+    }
+    _save_cache(cache_key, result)
+    ok(result)
+
+
+def _map_track_from_video_details(details: dict) -> dict:
+    """Map a ytmusicapi videoDetails dict to our standard track shape."""
+    artists = []
+    for a in details.get("author", "").split(","):
+        a = a.strip()
+        if a:
+            artists.append({"name": a, "id": None})
+    # get_song also returns microformat / playerOverlays with richer data
+    thumbs = []
+    for t in details.get("thumbnail", {}).get("thumbnails", []):
+        thumbs.append({"url": t.get("url"), "width": t.get("width"), "height": t.get("height")})
+    return {
+        "videoId": details.get("videoId"),
+        "title": details.get("title", ""),
+        "artists": artists,
+        "album": None,
+        "duration": details.get("lengthSeconds"),
+        "durationSeconds": int(details.get("lengthSeconds", 0)) if details.get("lengthSeconds") else None,
+        "thumbnails": thumbs,
+        "isExplicit": False,
+        "videoType": "song",
+        "year": None,
+        "trackNumber": None,
+        "trackCount": None,
+    }
 
 
 def cmd_get_song(video_id: str):
     ytm = get_ytmusic(needs_auth=False)
+
+    # Fast path: direct get_song API call (single round-trip)
+    try:
+        info = ytm.get_song(video_id)
+        if info and "videoDetails" in info:
+            details = info["videoDetails"]
+            if details.get("videoId") == video_id:
+                ok({"song": _map_track_from_video_details(details)})
+                return
+    except Exception:
+        pass
+
+    # Fallback: search + watch_playlist
     results = ytm.search(video_id, filter="songs", limit=5)
     song = None
     for r in results:
@@ -1004,33 +1104,28 @@ def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = "
     fail("All download methods failed (yt-dlp failed, ytmusicapi failed or unavailable)")
 
 
-def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
-    result = _get_stream_url_ytdlp(video_id, quality)
-    if result and result.get("url"):
-        ok(result)
-        return
-
-    ytm = get_ytmusic(needs_auth=True)
+def _get_stream_url_ytmusicapi(video_id: str, quality: str = "FLAC") -> dict | None:
+    """Fast stream-url extraction via ytmusicapi (single authenticated API call)."""
+    try:
+        ytm = get_ytmusic(needs_auth=True)
+    except Exception:
+        return None
     try:
         stream_info = ytm.get_song(video_id)
-    except Exception as e:
-        fail(f"Failed to get stream info: {e}")
-        return
+    except Exception:
+        return None
 
     if not stream_info or "streamingData" not in stream_info:
-        fail("No streaming data available")
-        return
+        return None
 
     sd = stream_info["streamingData"]
     formats = sd.get("adaptiveFormats", []) + sd.get("formats", [])
     if not formats:
-        fail("No audio formats available")
-        return
+        return None
 
     audio_formats = [f for f in formats if f.get("mimeType", "").startswith("audio/")]
     if not audio_formats:
-        fail("No audio-only formats available")
-        return
+        return None
 
     audio_formats.sort(key=lambda f: int(f.get("bitrate", 0)), reverse=True)
     selected = audio_formats[0]
@@ -1042,15 +1137,41 @@ def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
             url = _extract_url_from_cipher(sig_cipher)
 
     if not url:
-        fail("No stream URL available")
-        return
+        return None
 
-    ok({
-        "videoId": video_id, "url": url, "mimeType": selected.get("mimeType"),
-        "bitrate": selected.get("bitrate"), "codec": selected.get("mimeType", "").split(";")[0].replace("audio/", ""),
+    return {
+        "videoId": video_id,
+        "url": url,
+        "mimeType": selected.get("mimeType"),
+        "bitrate": selected.get("bitrate"),
+        "codec": selected.get("mimeType", "").split(";")[0].replace("audio/", ""),
         "quality": selected.get("quality"),
         "durationMs": int(stream_info.get("videoDetails", {}).get("lengthSeconds", 0)) * 1000,
-    })
+    }
+
+
+def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
+    cache_key = f"stream_{_cache_key(video_id, quality)}"
+    cached = _load_cache(cache_key, ttl_seconds=1800)  # 30 min TTL
+    if cached and cached.get("url"):
+        ok(cached)
+        return
+
+    # Fast path: ytmusicapi authenticated call (no page scraping / JS execution)
+    result = _get_stream_url_ytmusicapi(video_id, quality)
+    if result and result.get("url"):
+        _save_cache(cache_key, result)
+        ok(result)
+        return
+
+    # Fallback: yt-dlp (slower — does page fetch + signature deciphering)
+    result = _get_stream_url_ytdlp(video_id, quality)
+    if result and result.get("url"):
+        _save_cache(cache_key, result)
+        ok(result)
+        return
+
+    fail("No stream URL available")
 
 
 def cmd_check_auth():
