@@ -44,41 +44,6 @@ public class YouTubeMusicDownloadService : BaseDownloadService
         var quality = _settings.Quality ?? "FLAC";
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Fast path: stream directly from the CDN URL, matching Qobuz's approach.
-        // This avoids the Python bridge overhead and the temp-file → MemoryStream indirection.
-        var streamResult = await _bridge.GetStreamUrlAsync(trackId, quality);
-        if (streamResult?.Url != null)
-        {
-            _logger.LogInformation(
-                "Streaming track {TrackId} from CDN URL (codec={Codec}, bitrate={Bitrate}, quality={Quality})",
-                trackId, streamResult.Codec, streamResult.Bitrate, streamResult.Quality);
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, streamResult.Url);
-            request.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
-            request.Headers.Add("Referer", "https://music.youtube.com/");
-
-            var response = await _httpClientFactory.CreateClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            response.EnsureSuccessStatusCode();
-
-            var responseStream = await HttpResponseStream.CreateAsync(response, cancellationToken);
-
-            var extension = YouTubeMusicQuality.MimeTypeToExtension(streamResult.MimeType);
-            var downloadedQuality = YouTubeMusicQuality.FromApiParams(streamResult.MimeType, streamResult.Bitrate);
-
-            double? mp4Duration = null;
-            if (streamResult.DurationMs > 0)
-            {
-                mp4Duration = streamResult.DurationMs / 1000.0;
-            }
-
-            return new DownloadResult(responseStream, extension, downloadedQuality, mp4Duration);
-        }
-
-        // Fallback: download via Python bridge (yt-dlp) when no CDN URL is available.
-        _logger.LogWarning(
-            "No CDN stream URL available for {TrackId}, falling back to Python bridge download",
-            trackId);
-
         var tempDir = Path.Combine(Path.GetTempPath(), "octo-fiesta-ytm-dl", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
@@ -122,6 +87,7 @@ public class YouTubeMusicDownloadService : BaseDownloadService
         }
         finally
         {
+            // Clean up downloaded file and temp directory
             if (filePath != null)
             {
                 try { File.Delete(filePath); } catch { /* best effort */ }
