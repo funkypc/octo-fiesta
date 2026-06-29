@@ -38,7 +38,7 @@ public abstract class BaseDownloadService : IDownloadService
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _metadataPathLocks = new();
     private static readonly TimeSpan MetadataCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MetadataCacheNegativeTtl = TimeSpan.FromMinutes(1);
-    private readonly IHttpClientFactory _httpClientFactory;
+    protected readonly IHttpClientFactory _httpClientFactory;
     private static readonly TimeSpan MetadataCacheCleanupInterval = TimeSpan.FromMinutes(5);
     private readonly object _metadataCacheCleanupLock = new();
     private DateTime _metadataCacheNextCleanupUtc = DateTime.UtcNow.Add(MetadataCacheCleanupInterval);
