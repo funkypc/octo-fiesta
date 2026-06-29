@@ -11,9 +11,8 @@ Authentication:
   - OAuth: Set the YTMUSIC_OAUTH_CREDENTIALS env var or provide --oauth
 
 Download strategy (in order):
-  1. Innertube ANDROID client — direct API call, no JS runtime needed
-  2. yt-dlp (if available) — with player_client fallbacks
-  3. ytmusicapi get_song + urllib — last resort for auth'd users
+  1. yt-dlp (if available) — with player_client fallbacks
+  2. ytmusicapi get_song + urllib — last resort for auth'd users
 
 Usage:
   python youtube-music-bridge.py <command> [args...]
@@ -51,6 +50,55 @@ try:
     _HAS_YTDLP = True
 except ImportError:
     _HAS_YTDLP = False
+
+
+_AUTO_UPDATE_PACKAGES = ["yt-dlp", "yt-dlp-ejs"]
+
+def _maybe_auto_update_packages():
+    """Throttled in-place upgrade of yt-dlp / yt-dlp-ejs in the running venv.
+
+    Runs at most once per YTMUSIC_AUTO_UPDATE_HOURS (default 24, 0 disables).
+    Upgrades happen in the venv of sys.executable and take effect on the next
+    invocation (already-imported modules are not reloaded).
+    """
+    try:
+        interval_h = float(os.environ.get("YTMUSIC_AUTO_UPDATE_HOURS", "24"))
+    except ValueError:
+        interval_h = 24.0
+    if interval_h <= 0:
+        return
+
+    state_dir = os.environ.get("YTMUSIC_UPDATE_STATE_DIR") or os.path.dirname(os.path.abspath(__file__))
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+    except OSError:
+        return
+    marker = os.path.join(state_dir, ".ytmusic_last_update")
+
+    try:
+        if os.path.exists(marker):
+            age_h = (time.time() - os.path.getmtime(marker)) / 3600.0
+            if age_h < interval_h:
+                return
+    except OSError:
+        return
+
+    print("[auto-update] checking for yt-dlp / yt-dlp-ejs upgrades...", file=sys.stderr, flush=True)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--upgrade", *_AUTO_UPDATE_PACKAGES],
+            capture_output=True, timeout=180,
+        )
+        if proc.returncode == 0:
+            try:
+                os.utime(marker, None)
+            except OSError:
+                pass
+            print("[auto-update] upgrade check complete", file=sys.stderr, flush=True)
+        else:
+            print(f"[auto-update] pip exited {proc.returncode}", file=sys.stderr, flush=True)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"[auto-update] skipped: {e}", file=sys.stderr, flush=True)
 
 
 _YTM_ORIGIN = "https://music.youtube.com"
@@ -1040,6 +1088,8 @@ COMMANDS = {
 def main():
     if len(sys.argv) < 2:
         fail("No command provided. Available: " + ", ".join(COMMANDS.keys()))
+
+    _maybe_auto_update_packages()
 
     cmd_name = sys.argv[1]
     if cmd_name not in COMMANDS:
