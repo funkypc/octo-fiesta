@@ -85,7 +85,12 @@ public enum MusicService
     /// <summary>
     /// YouTube Music service
     /// </summary>
-    YouTubeMusic
+    YouTubeMusic,
+
+    /// <summary>
+    /// JiaSaavn music service (SquidWTF-hosted)
+    /// </summary>
+    JiaSaavn
 }
 
 public class SubsonicSettings
@@ -128,7 +133,7 @@ public class SubsonicSettings
     /// <summary>
     /// Music service to use (default: SquidWTF)
     /// Environment variable: MUSIC_SERVICE
-    /// Values: "Deezer", "Qobuz", "SquidWTF", "Yandex", "YouTubeMusic"
+    /// Values: "Deezer", "Qobuz", "SquidWTF", "Yandex", "YouTubeMusic", "JiaSaavn"
     /// </summary>
     public MusicService MusicService { get; set; } = MusicService.SquidWTF;
     
