@@ -109,8 +109,10 @@ services:
       - YouTubeMusic__ScriptPath=${YTMUSIC_SCRIPT_PATH:-/app/youtube-music-bridge.py}
       # Include tracks marked as unavailable in results (default: false)
       - YouTubeMusic__IncludeUnavailable=${YTMUSIC_INCLUDE_UNAVAILABLE:-false}
-      # Auto-upgrade yt-dlp / yt-dlp-ejs in the venv at most every N hours (default: 24, 0 disables)
-      - YTMUSIC_AUTO_UPDATE_HOURS=${YTMUSIC_AUTO_UPDATE_HOURS:-24}
+      # Auto-upgrade yt-dlp / yt-dlp-ejs in the venv at most every N hours (0 disables, default: 0)
+      - YouTubeMusic__AutoUpdateHours=${YTMUSIC_AUTO_UPDATE_HOURS:-0}
+      # Detailed timestamped timing logs (default: true)
+      - YouTubeMusic__VerboseTiming=${YTMUSIC_VERBOSE_TIMING:-true}
     volumes:
       - ${DOWNLOAD_PATH:-./downloads}:/app/downloads
       - ${YTMUSIC_COOKIE_FILE:-./ytmusic-cookies.json}:/app/ytmusic-cookies.json:ro

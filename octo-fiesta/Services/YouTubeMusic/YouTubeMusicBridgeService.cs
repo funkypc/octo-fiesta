@@ -98,6 +98,7 @@ public class YouTubeMusicBridgeService
             startInfo.EnvironmentVariables["YT_MUSIC_COOKIE"] = _settings.AuthCookie;
         }
         startInfo.EnvironmentVariables["YT_MUSIC_VERBOSE_TIMING"] = verbose ? "1" : "0";
+        startInfo.EnvironmentVariables["YTMUSIC_AUTO_UPDATE_HOURS"] = _settings.AutoUpdateHours.ToString();
 
         using var process = new Process { StartInfo = startInfo };
         var outputTcs = new TaskCompletionSource<string>();

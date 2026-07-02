@@ -29,6 +29,7 @@ import time
 import hashlib
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlparse, unquote
@@ -130,7 +131,8 @@ def _maybe_auto_update_packages():
         _t(f"auto-update: pip done rc={proc.returncode}")
         if proc.returncode == 0:
             try:
-                os.utime(marker, None)
+                with open(marker, "w") as f:
+                    f.write(str(time.time()))
             except OSError:
                 pass
             if _TIMING:
@@ -1024,9 +1026,13 @@ def cmd_search_all(query: str, song_limit: int, album_limit: int, artist_limit: 
 
     _t("cache miss: all")
     ytm = get_ytmusic(needs_auth=False)
-    songs = ytm.search(query, filter="songs", limit=song_limit)
-    albums = ytm.search(query, filter="albums", limit=album_limit)
-    artists = ytm.search(query, filter="artists", limit=artist_limit)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        songs_future = pool.submit(ytm.search, query, filter="songs", limit=song_limit)
+        albums_future = pool.submit(ytm.search, query, filter="albums", limit=album_limit)
+        artists_future = pool.submit(ytm.search, query, filter="artists", limit=artist_limit)
+        songs = songs_future.result()
+        albums = albums_future.result()
+        artists = artists_future.result()
     _t("ytm.search done: all")
     result = {
         "songs": [_map_track(t) for t in songs if t.get("videoType") == "MUSIC_VIDEO_TYPE_ATV" or t.get("resultType") == "song"],

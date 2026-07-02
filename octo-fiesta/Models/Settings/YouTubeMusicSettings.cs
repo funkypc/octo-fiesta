@@ -43,4 +43,11 @@ public class YouTubeMusicSettings
     /// Default: true
     /// </summary>
     public bool VerboseTiming { get; set; } = true;
+
+    /// <summary>
+    /// Auto-update interval for yt-dlp / yt-dlp-ejs in the Python venv, in hours.
+    /// 0 disables auto-update (recommended for performance).
+    /// Default: 0 (disabled)
+    /// </summary>
+    public double AutoUpdateHours { get; set; } = 0;
 }
