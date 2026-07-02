@@ -18,6 +18,7 @@ public class PlaylistSyncService
     private readonly IMusicMetadataService? _qobuzMetadataService;
     private readonly IMusicMetadataService? _squidWTFMetadataService;
     private readonly IMusicMetadataService? _yandexMetadataService;
+    private readonly IMusicMetadataService? _youtubeMusicMetadataService;
     private readonly IEnumerable<IDownloadService> _downloadServices;
     private readonly IConfiguration _configuration;
     private readonly SubsonicSettings _subsonicSettings;
@@ -48,6 +49,7 @@ public class PlaylistSyncService
         _qobuzMetadataService = metadataServices.FirstOrDefault(s => s.GetType().Name.Contains("Qobuz"));
         _squidWTFMetadataService = metadataServices.FirstOrDefault(s => s.GetType().Name.Contains("SquidWTF"));
         _yandexMetadataService = metadataServices.FirstOrDefault(s => s.GetType().Name.Contains("Yandex"));
+        _youtubeMusicMetadataService = metadataServices.FirstOrDefault(s => s.GetType().Name.Contains("YouTubeMusic"));
         
         _downloadServices = downloadServices;
         _configuration = configuration;
@@ -78,6 +80,7 @@ public class PlaylistSyncService
             "qobuz" when _qobuzMetadataService != null => _qobuzMetadataService,
             "squidwtf" when _squidWTFMetadataService != null => _squidWTFMetadataService,
             "yandex" when _yandexMetadataService != null => _yandexMetadataService,
+            "youtube_music" when _youtubeMusicMetadataService != null => _youtubeMusicMetadataService,
             _ => null
         };
     }
@@ -159,8 +162,10 @@ public class PlaylistSyncService
             _logger.LogInformation("Found {TrackCount} tracks in playlist '{PlaylistName}'", tracks.Count, playlist.Name);
             
             // Get the appropriate download service for this provider
-            var downloadService = _downloadServices.FirstOrDefault(s => 
-                s.GetType().Name.Contains(provider, StringComparison.OrdinalIgnoreCase));
+            // Normalize provider name: remove underscores for PascalCase matching (e.g., youtube_music -> YouTubeMusic)
+            var normalizedProvider = provider.Replace("_", "", StringComparison.OrdinalIgnoreCase);
+            var downloadService = _downloadServices.FirstOrDefault(s =>
+                s.GetType().Name.Contains(normalizedProvider, StringComparison.OrdinalIgnoreCase));
             
             if (downloadService == null)
             {

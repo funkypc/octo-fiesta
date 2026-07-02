@@ -1,6 +1,6 @@
 services:
   octo-fiesta:
-    image: ghcr.io/v1ck3s/octo-fiesta
+    build: .
     container_name: octo-fiesta
     restart: unless-stopped
     ports:
@@ -19,7 +19,7 @@ services:
       - Subsonic__AdminUsername=${SUBSONIC_ADMIN_USERNAME:-}
       # Admin Password to perform actions on navidrome server that require admin permissions (optional)
       - Subsonic__AdminPassword=${SUBSONIC_ADMIN_PASSWORD:-}
-      # Music service to use: Deezer, Qobuz, or SquidWTF (default: SquidWTF)
+      # Music service to use: Deezer, Qobuz, SquidWTF, Yandex, or YouTubeMusic (default: SquidWTF)
       - Subsonic__MusicService=${MUSIC_SERVICE:-SquidWTF}
       # Storage mode: Permanent (saved to library), Cache (temporary, auto-cleanup)
       - Subsonic__StorageMode=${STORAGE_MODE:-Permanent}
@@ -94,5 +94,25 @@ services:
       # Default: false
       # Available: true, false
       - Yandex__IncludeUnavailable=${YANDEX_INCLUDE_UNAVAILABLE_TRACKS:-false}
+
+      # ===== YOUTUBE MUSIC SETTINGS =====
+      # YouTube Music auth: path to a JSON file with browser cookies (required if using YouTubeMusic)
+      # Create a JSON file with cookies exported from https://music.youtube.com
+      # Example JSON: {"__Secure-3PAPISID":"val","SAPISID":"val","__Secure-1PAPISID":"val",...}
+      # Mount the file as a volume and set YTMUSIC_AUTH_COOKIE to the in-container path
+      - YouTubeMusic__AuthCookie=${YTMUSIC_AUTH_COOKIE:-}
+      # Preferred audio quality: FLAC, AAC_256, MP3_256, MP3_128, AAC_128, AAC_64 (optional, default: FLAC)
+      - YouTubeMusic__Quality=${YTMUSIC_QUALITY:-}
+      # Python executable path (set in Dockerfile, override only if needed)
+      - YouTubeMusic__PythonPath=${YTMUSIC_PYTHON_PATH:-/opt/yt-venv/bin/python}
+      # Bridge script path (set in Dockerfile, override only if needed)
+      - YouTubeMusic__ScriptPath=${YTMUSIC_SCRIPT_PATH:-/app/youtube-music-bridge.py}
+      # Include tracks marked as unavailable in results (default: false)
+      - YouTubeMusic__IncludeUnavailable=${YTMUSIC_INCLUDE_UNAVAILABLE:-false}
+      # Auto-upgrade yt-dlp / yt-dlp-ejs in the venv at most every N hours (0 disables, default: 0)
+      - YouTubeMusic__AutoUpdateHours=${YTMUSIC_AUTO_UPDATE_HOURS:-0}
+      # Detailed timestamped timing logs (default: false)
+      - YouTubeMusic__VerboseTiming=${YTMUSIC_VERBOSE_TIMING:-false}
     volumes:
       - ${DOWNLOAD_PATH:-./downloads}:/app/downloads
+      - ${YTMUSIC_COOKIE_FILE:-./ytmusic-cookies.json}:/app/ytmusic-cookies.json:ro

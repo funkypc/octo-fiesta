@@ -4,6 +4,7 @@ using octo_fiesta.Services.Deezer;
 using octo_fiesta.Services.Qobuz;
 using octo_fiesta.Services.SquidWTF;
 using octo_fiesta.Services.Yandex;
+using octo_fiesta.Services.YouTubeMusic;
 using octo_fiesta.Services.Local;
 using octo_fiesta.Services.Lyrics;
 using octo_fiesta.Services.Validation;
@@ -36,6 +37,8 @@ builder.Services.Configure<SquidWTFSettings>(
     builder.Configuration.GetSection("SquidWTF"));
 builder.Services.Configure<YandexSettings>(
     builder.Configuration.GetSection("Yandex"));
+builder.Services.Configure<YouTubeMusicSettings>(
+    builder.Configuration.GetSection("YouTubeMusic"));
 builder.Services.Configure<LyricsSettings>(
     builder.Configuration.GetSection("Lyrics"));
 
@@ -115,6 +118,16 @@ else if (musicService == MusicService.Yandex)
     builder.Services.AddSingleton<IMusicMetadataService, YandexMetadataService>();
     builder.Services.AddSingleton<IDownloadService, YandexDownloadService>();
 }
+else if (musicService == MusicService.YouTubeMusic)
+{
+    if (enableExternalPlaylists)
+    {
+        builder.Services.AddSingleton<PlaylistSyncService>();
+    }
+    builder.Services.AddSingleton<YouTubeMusicBridgeService>();
+    builder.Services.AddSingleton<IMusicMetadataService, YouTubeMusicMetadataService>();
+    builder.Services.AddSingleton<IDownloadService, YouTubeMusicDownloadService>();
+}
 else
 {
     // If playlists enabled, register Qobuz FIRST (secondary provider)
@@ -137,9 +150,11 @@ builder.Services.AddSingleton<IStartupValidator, DeezerStartupValidator>();
 builder.Services.AddSingleton<IStartupValidator, QobuzStartupValidator>();
 builder.Services.AddSingleton<IStartupValidator, SquidWTFStartupValidator>();
 builder.Services.AddSingleton<IStartupValidator, YandexStartupValidator>();
+builder.Services.AddSingleton<IStartupValidator, YouTubeMusicStartupValidator>();
 
 // Configure custom HTTP clients for services
 builder.Services.AddHttpClient("Yandex", YandexHttpClientConfiguration.ConfigureClient);
+builder.Services.AddHttpClient("YouTubeMusic", YouTubeMusicHttpClientConfiguration.ConfigureClient);
 
 // Register orchestrator as hosted service
 builder.Services.AddHostedService<StartupValidationOrchestrator>();
