@@ -37,4 +37,10 @@ public class YouTubeMusicSettings
     /// Default: false
     /// </summary>
     public bool IncludeUnavailable { get; set; } = false;
+
+    /// <summary>
+    /// Enable detailed timestamped timing logs for search/download.
+    /// Default: true
+    /// </summary>
+    public bool VerboseTiming { get; set; } = true;
 }

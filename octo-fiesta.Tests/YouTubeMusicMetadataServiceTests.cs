@@ -22,7 +22,8 @@ public class YouTubeMusicMetadataServiceTests
             Mock.Of<ILogger<YouTubeMusicBridgeService>>())
         { CallBase = true };
         var settings = new SubsonicSettings { ExplicitFilter = ExplicitFilter.All };
-        _service = new YouTubeMusicMetadataService(_bridgeMock.Object, _loggerMock.Object, Microsoft.Extensions.Options.Options.Create(settings));
+        var ytSettings = new YouTubeMusicSettings();
+        _service = new YouTubeMusicMetadataService(_bridgeMock.Object, _loggerMock.Object, Microsoft.Extensions.Options.Options.Create(settings), Microsoft.Extensions.Options.Options.Create(ytSettings));
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using octo_fiesta.Models.Domain;
 using octo_fiesta.Models.Search;
 using octo_fiesta.Models.Settings;
@@ -15,6 +16,7 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     private readonly YouTubeMusicBridgeService _bridge;
     private readonly ILogger<YouTubeMusicMetadataService> _logger;
     private readonly SubsonicSettings _settings;
+    private readonly YouTubeMusicSettings _ytSettings;
     public const string ProviderName = "youtube_music";
     private const string SongPrefix = "ext-youtube_music-";
     private const string AlbumPrefix = "ext-youtube_music-album-";
@@ -23,19 +25,28 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     public YouTubeMusicMetadataService(
         YouTubeMusicBridgeService bridge,
         ILogger<YouTubeMusicMetadataService> logger,
-        IOptions<SubsonicSettings> settings)
+        IOptions<SubsonicSettings> settings,
+        IOptions<YouTubeMusicSettings> ytSettings)
     {
         _bridge = bridge;
         _logger = logger;
         _settings = settings.Value;
+        _ytSettings = ytSettings.Value;
     }
 
     public async Task<List<Song>> SearchSongsAsync(string query, int limit = 20)
     {
         try
         {
+            var sw = Stopwatch.StartNew();
             var result = await _bridge.SearchSongsAsync(query, limit);
-            return result.Songs.Select(MapTrackToSong).Where(ShouldIncludeSong).ToList();
+            var bridgeMs = sw.ElapsedMilliseconds;
+            var mapped = result.Songs.Select(MapTrackToSong).Where(ShouldIncludeSong).ToList();
+            if (_ytSettings.VerboseTiming)
+            {
+                _logger.LogInformation("[ytm-meta] SearchSongs query={Query} bridge={BridgeMs}ms map={MapMs}ms count={Count}", query, bridgeMs, sw.ElapsedMilliseconds - bridgeMs, mapped.Count);
+            }
+            return mapped;
         }
         catch (Exception ex)
         {
@@ -48,8 +59,15 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     {
         try
         {
+            var sw = Stopwatch.StartNew();
             var result = await _bridge.SearchAlbumsAsync(query, limit);
-            return result.Albums.Select(MapAlbumToAlbum).ToList();
+            var bridgeMs = sw.ElapsedMilliseconds;
+            var mapped = result.Albums.Select(MapAlbumToAlbum).ToList();
+            if (_ytSettings.VerboseTiming)
+            {
+                _logger.LogInformation("[ytm-meta] SearchAlbums query={Query} bridge={BridgeMs}ms map={MapMs}ms count={Count}", query, bridgeMs, sw.ElapsedMilliseconds - bridgeMs, mapped.Count);
+            }
+            return mapped;
         }
         catch (Exception ex)
         {
@@ -62,8 +80,15 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     {
         try
         {
+            var sw = Stopwatch.StartNew();
             var result = await _bridge.SearchArtistsAsync(query, limit);
-            return result.Artists.Select(MapArtistToArtist).ToList();
+            var bridgeMs = sw.ElapsedMilliseconds;
+            var mapped = result.Artists.Select(MapArtistToArtist).ToList();
+            if (_ytSettings.VerboseTiming)
+            {
+                _logger.LogInformation("[ytm-meta] SearchArtists query={Query} bridge={BridgeMs}ms map={MapMs}ms count={Count}", query, bridgeMs, sw.ElapsedMilliseconds - bridgeMs, mapped.Count);
+            }
+            return mapped;
         }
         catch (Exception ex)
         {
@@ -76,13 +101,20 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     {
         try
         {
+            var sw = Stopwatch.StartNew();
             var result = await _bridge.SearchAllAsync(query, songLimit, albumLimit, artistLimit);
-            return new SearchResult
+            var bridgeMs = sw.ElapsedMilliseconds;
+            var mapped = new SearchResult
             {
                 Songs = result.Songs.Select(MapTrackToSong).Where(ShouldIncludeSong).ToList(),
                 Albums = result.Albums.Select(MapAlbumToAlbum).ToList(),
                 Artists = result.Artists.Select(MapArtistToArtist).ToList()
             };
+            if (_ytSettings.VerboseTiming)
+            {
+                _logger.LogInformation("[ytm-meta] SearchAll query={Query} bridge={BridgeMs}ms map={MapMs}ms songs={Songs} albums={Albums} artists={Artists}", query, bridgeMs, sw.ElapsedMilliseconds - bridgeMs, mapped.Songs.Count, mapped.Albums.Count, mapped.Artists.Count);
+            }
+            return mapped;
         }
         catch (Exception ex)
         {
@@ -95,10 +127,15 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
     {
         if (externalProvider != ProviderName) return null;
 
+        var sw = Stopwatch.StartNew();
         var track = await _bridge.GetSongAsync(externalId);
         if (track == null) return null;
-
-        return MapTrackToSong(track);
+        var result = MapTrackToSong(track);
+        if (_ytSettings.VerboseTiming)
+        {
+            _logger.LogInformation("[ytm-meta] GetSong id={Id} total={TotalMs}ms", externalId, sw.ElapsedMilliseconds);
+        }
+        return result;
     }
 
     public async Task<Album?> GetAlbumAsync(string externalProvider, string externalId)
@@ -112,28 +149,44 @@ public class YouTubeMusicMetadataService : IMusicMetadataService
             return null;
         }
 
+        var sw = Stopwatch.StartNew();
         var album = await _bridge.GetAlbumAsync(externalId);
         if (album == null) return null;
-
-        return MapAlbumWithTracks(album);
+        var result = MapAlbumWithTracks(album);
+        if (_ytSettings.VerboseTiming)
+        {
+            _logger.LogInformation("[ytm-meta] GetAlbum id={Id} total={TotalMs}ms tracks={Tracks}", externalId, sw.ElapsedMilliseconds, result.Songs.Count);
+        }
+        return result;
     }
 
     public async Task<Artist?> GetArtistAsync(string externalProvider, string externalId)
     {
         if (externalProvider != ProviderName) return null;
 
+        var sw = Stopwatch.StartNew();
         var artist = await _bridge.GetArtistAsync(externalId);
         if (artist == null) return null;
-
-        return MapArtistToArtist(artist);
+        var result = MapArtistToArtist(artist);
+        if (_ytSettings.VerboseTiming)
+        {
+            _logger.LogInformation("[ytm-meta] GetArtist id={Id} total={TotalMs}ms", externalId, sw.ElapsedMilliseconds);
+        }
+        return result;
     }
 
     public async Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId)
     {
         if (externalProvider != ProviderName) return new List<Album>();
 
+        var sw = Stopwatch.StartNew();
         var albums = await _bridge.GetArtistAlbumsAsync(externalId);
-        return albums.Select(MapAlbumToAlbum).ToList();
+        var mapped = albums.Select(MapAlbumToAlbum).ToList();
+        if (_ytSettings.VerboseTiming)
+        {
+            _logger.LogInformation("[ytm-meta] GetArtistAlbums id={Id} total={TotalMs}ms count={Count}", externalId, sw.ElapsedMilliseconds, mapped.Count);
+        }
+        return mapped;
     }
 
     public Task<List<ExternalPlaylist>> SearchPlaylistsAsync(string query, int limit = 20)

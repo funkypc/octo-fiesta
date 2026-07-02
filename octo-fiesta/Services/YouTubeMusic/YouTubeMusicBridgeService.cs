@@ -49,6 +49,9 @@ public class YouTubeMusicBridgeService
     {
         var allArgs = new List<string> { command };
         allArgs.AddRange(args);
+        var verbose = _settings.VerboseTiming;
+        var sw = Stopwatch.StartNew();
+        var resolveSw = Stopwatch.StartNew();
 
         // Resolve script path relative to application base directory if relative
         var scriptPath = _settings.ScriptPath;
@@ -65,7 +68,15 @@ public class YouTubeMusicBridgeService
                 "Ensure the script is deployed alongside the application or update the ScriptPath configuration.");
         }
 
-        _logger.LogDebug("Calling bridge: {Script} {Args}", scriptPath, string.Join(" ", allArgs));
+        resolveSw.Stop();
+        if (verbose)
+        {
+            _logger.LogInformation("[ytm-bridge] cmd={Command} start", command);
+        }
+        else
+        {
+            _logger.LogDebug("Calling bridge: {Script} {Args}", scriptPath, string.Join(" ", allArgs));
+        }
 
         var startInfo = new ProcessStartInfo
         {
@@ -81,11 +92,12 @@ public class YouTubeMusicBridgeService
             startInfo.ArgumentList.Add(arg);
         }
 
-        // Set environment for auth
+        // Set environment for auth and timing verbosity
         if (!string.IsNullOrEmpty(_settings.AuthCookie))
         {
             startInfo.EnvironmentVariables["YT_MUSIC_COOKIE"] = _settings.AuthCookie;
         }
+        startInfo.EnvironmentVariables["YT_MUSIC_VERBOSE_TIMING"] = verbose ? "1" : "0";
 
         using var process = new Process { StartInfo = startInfo };
         var outputTcs = new TaskCompletionSource<string>();
@@ -110,6 +122,10 @@ public class YouTubeMusicBridgeService
         {
             if (e.Data != null)
             {
+                if (verbose && e.Data.StartsWith("[ytm-timing]"))
+                {
+                    _logger.LogInformation("[ytm-bridge] {TimingLine}", e.Data);
+                }
                 errorBuffer.AppendLine(e.Data);
             }
             else
@@ -118,6 +134,7 @@ public class YouTubeMusicBridgeService
             }
         };
 
+        var processSw = Stopwatch.StartNew();
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
@@ -138,6 +155,7 @@ public class YouTubeMusicBridgeService
         var error = await errorTcs.Task;
 
         await process.WaitForExitAsync();
+        processSw.Stop();
 
         _logger.LogDebug("Bridge output: {Output}", output);
         if (!string.IsNullOrWhiteSpace(error))
@@ -158,12 +176,20 @@ public class YouTubeMusicBridgeService
             throw new InvalidOperationException("Bridge process returned empty output.");
         }
 
+        var parseSw = Stopwatch.StartNew();
         // Try to parse the response as a BridgeResponse first
         try
         {
             var response = JsonSerializer.Deserialize<YouTubeMusicBridgeResponse<T>>(output.Trim(), _jsonOptions);
             if (response?.Ok == true && response.Result != null)
             {
+                parseSw.Stop();
+                if (verbose)
+                {
+                    _logger.LogInformation(
+                        "[ytm-bridge] cmd={Command} done total={TotalMs}ms resolve={ResolveMs}ms process={ProcessMs}ms parse={ParseMs}ms",
+                        command, sw.ElapsedMilliseconds, resolveSw.ElapsedMilliseconds, processSw.ElapsedMilliseconds, parseSw.ElapsedMilliseconds);
+                }
                 return response.Result;
             }
             if (response?.Ok == false && !string.IsNullOrEmpty(response.Error))
@@ -178,6 +204,13 @@ public class YouTubeMusicBridgeService
 
         // Fallback: try direct deserialization
         var result = JsonSerializer.Deserialize<T>(output.Trim(), _jsonOptions);
+        parseSw.Stop();
+        if (verbose)
+        {
+            _logger.LogInformation(
+                "[ytm-bridge] cmd={Command} done total={TotalMs}ms resolve={ResolveMs}ms process={ProcessMs}ms parse={ParseMs}ms",
+                command, sw.ElapsedMilliseconds, resolveSw.ElapsedMilliseconds, processSw.ElapsedMilliseconds, parseSw.ElapsedMilliseconds);
+        }
         if (result != null)
         {
             return result;

@@ -52,6 +52,23 @@ except ImportError:
     _HAS_YTDLP = False
 
 
+_TIMING = os.environ.get("YT_MUSIC_VERBOSE_TIMING", "1") not in ("0", "false", "False")
+_T0 = time.time()
+_T_PREV = time.time()
+
+def _t(label: str):
+    global _T_PREV
+    if not _TIMING:
+        return
+    now = time.time()
+    from datetime import datetime
+    iso = datetime.now().isoformat(timespec="milliseconds")
+    delta = int((now - _T_PREV) * 1000)
+    _T_PREV = now
+    print(f"[ytm-timing] {iso} Δ+{delta}ms {label}", file=sys.stderr, flush=True)
+
+_t("imports done")
+
 _AUTO_UPDATE_PACKAGES = ["yt-dlp", "yt-dlp-ejs"]
 
 def _maybe_auto_update_packages():
@@ -85,7 +102,8 @@ def _maybe_auto_update_packages():
     except OSError:
         return
 
-    print("[auto-update] checking for yt-dlp / yt-dlp-ejs upgrades...", file=sys.stderr, flush=True)
+    if _TIMING:
+        print("[auto-update] checking for yt-dlp / yt-dlp-ejs upgrades...", file=sys.stderr, flush=True)
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--upgrade", *_AUTO_UPDATE_PACKAGES],
@@ -96,11 +114,14 @@ def _maybe_auto_update_packages():
                 os.utime(marker, None)
             except OSError:
                 pass
-            print("[auto-update] upgrade check complete", file=sys.stderr, flush=True)
+            if _TIMING:
+                print("[auto-update] upgrade check complete", file=sys.stderr, flush=True)
         else:
-            print(f"[auto-update] pip exited {proc.returncode}", file=sys.stderr, flush=True)
+            if _TIMING:
+                print(f"[auto-update] pip exited {proc.returncode}", file=sys.stderr, flush=True)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"[auto-update] skipped: {e}", file=sys.stderr, flush=True)
+        if _TIMING:
+            print(f"[auto-update] skipped: {e}", file=sys.stderr, flush=True)
 
 
 _YTM_ORIGIN = "https://music.youtube.com"
@@ -190,7 +211,8 @@ def _convert_webm_to_m4a(filepath: str, target_bitrate: int = 256000) -> str:
     if result.returncode == 0 and os.path.exists(m4a_path):
         os.remove(filepath)
         return m4a_path
-    print(f"[ffmpeg] webm->m4a conversion failed (rc={result.returncode}), keeping original", file=sys.stderr)
+    if _TIMING:
+        print(f"[ffmpeg] webm->m4a conversion failed (rc={result.returncode}), keeping original", file=sys.stderr)
     return filepath
 
 
@@ -389,6 +411,7 @@ def get_ytmusic(needs_auth=False):
         return _ymusic
     try:
         _ymusic = _create_ytmusic_instance(needs_auth=needs_auth)
+        _t("auth: ytmusic instance created")
         return _ymusic
     except Exception:
         if needs_auth:
@@ -398,6 +421,7 @@ def get_ytmusic(needs_auth=False):
             return _ymusic_noauth
         _ymusic_noauth = YTMusic()
         _ymusic = None
+        _t("auth: ytmusic no-auth instance created")
         return _ymusic_noauth
 
 
@@ -496,15 +520,16 @@ def _get_download_headers():
 
 def _download_track_ytmusicapi(video_id: str, quality: str, output_dir: str):
     """Download a track using ytmusicapi's authenticated session.
-    
+
     This uses ytmusicapi's get_song() to get stream info, then downloads
     via the same requests session that ytmusicapi uses (with all auth
     headers and cookies). This avoids the need for Node.js/yt-dlp.
-    
+
     For premium content, ytmusicapi's authenticated WEB_REMIX session
     returns streaming URLs that work when downloaded with the same
     session headers (Cookies + SAPISIDHASH + Referer).
     """
+    _t("ytmusicapi download start")
     if not _HAS_REQUESTS:
         raise RuntimeError("Python 'requests' package is required for downloading")
 
@@ -630,18 +655,21 @@ def _download_track_ytmusicapi(video_id: str, quality: str, output_dir: str):
         raise RuntimeError(f"Downloaded file not found at {filepath}")
 
     file_size = os.path.getsize(filepath)
+    _t(f"file written {file_size} bytes")
     if file_size < 1024:
         os.remove(filepath)
         raise RuntimeError(f"Downloaded file too small ({file_size} bytes), likely an error response")
 
     if _has_ffmpeg():
         filepath = _convert_webm_to_m4a(filepath, bitrate)
+        _t("ffmpeg conversion done")
 
     actual_mime = {
         "mp4": "audio/mp4", "webm": "audio/webm; codecs=opus", "opus": "audio/webm; codecs=opus",
         "mp3": "audio/mp3", "flac": "audio/flac", "ogg": "audio/ogg",
     }.get(codec, mime)
 
+    _t("ytmusicapi download done")
     return {
         "filepath": filepath,
         "mimeType": actual_mime,
@@ -677,7 +705,9 @@ def _write_netscape_cookie_file(raw_cookie: str, user_agent: str = "") -> str:
 class _YtdlpLogger:
     def debug(self, msg): pass
     def info(self, msg): pass
-    def warning(self, msg): print(f"[yt-dlp] {msg}", file=sys.stderr, flush=True)
+    def warning(self, msg):
+        if _TIMING:
+            print(f"[yt-dlp] {msg}", file=sys.stderr, flush=True)
     def error(self, msg): print(f"[yt-dlp] ERROR: {msg}", file=sys.stderr, flush=True)
 
 
@@ -727,6 +757,7 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
     last_error = None
     
     for client in clients_to_try:
+        _t(f"yt-dlp attempt start: {client}")
         ydl_opts = {
             "format": quality_spec,
             "quiet": True,
@@ -794,6 +825,8 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
                     else:
                         filepath = _convert_webm_to_m4a(filepath, int(abr * 1000) if abr else 0)
 
+                _t(f"yt-dlp attempt done: {client}")
+
                 actual_ext = os.path.splitext(filepath)[1].lstrip(".")
                 if is_transcode and quality.upper().startswith("MP3_"):
                     actual_ext = "mp3"
@@ -840,7 +873,8 @@ def _download_track_ytdlp(video_id: str, quality: str, output_dir: str):
                 }
         except Exception as e:
             last_error = e
-            print(f"[yt-dlp] Player client '{client}' failed: {e}", file=sys.stderr, flush=True)
+            if _TIMING:
+                print(f"[yt-dlp] Player client '{client}' failed: {e}", file=sys.stderr, flush=True)
             continue
 
     raise last_error or RuntimeError("All yt-dlp player clients failed")
@@ -898,7 +932,8 @@ def _get_stream_url_ytdlp(video_id: str, quality: str = "FLAC") -> dict | None:
                         "durationMs": int(info.get("duration", 0) * 1000) if info.get("duration") else 0,
                     }
         except Exception as e:
-            print(f"[yt-dlp] {client} extraction failed: {e}", file=sys.stderr, flush=True)
+            if _TIMING:
+                print(f"[yt-dlp] {client} extraction failed: {e}", file=sys.stderr, flush=True)
             continue
     return None
 
@@ -921,11 +956,14 @@ def _cached_search(name: str, query: str, limit: int, searcher):
     cache_key = f"{name}_{_cache_key(query, str(limit))}"
     cached = _load_cache(cache_key, ttl_seconds=120)
     if cached is not None:
+        _t(f"cache hit: {name}")
         ok(cached)
         return cached
 
+    _t(f"cache miss: {name}")
     ytm = get_ytmusic(needs_auth=False)
     result = searcher(ytm)
+    _t(f"ytm.search done: {name}")
     _save_cache(cache_key, result)
     ok(result)
     return result
@@ -956,13 +994,16 @@ def cmd_search_all(query: str, song_limit: int, album_limit: int, artist_limit: 
     cache_key = f"all_{_cache_key(query, str(song_limit), str(album_limit), str(artist_limit))}"
     cached = _load_cache(cache_key, ttl_seconds=120)
     if cached is not None:
+        _t("cache hit: all")
         ok(cached)
         return
 
+    _t("cache miss: all")
     ytm = get_ytmusic(needs_auth=False)
     songs = ytm.search(query, filter="songs", limit=song_limit)
     albums = ytm.search(query, filter="albums", limit=album_limit)
     artists = ytm.search(query, filter="artists", limit=artist_limit)
+    _t("ytm.search done: all")
     result = {
         "songs": [_map_track(t) for t in songs if t.get("videoType") == "MUSIC_VIDEO_TYPE_ATV" or t.get("resultType") == "song"],
         "albums": [_map_album(a) for a in albums],
@@ -1005,6 +1046,7 @@ def cmd_get_song(video_id: str):
     # Fast path: direct get_song API call (single round-trip)
     try:
         info = ytm.get_song(video_id)
+        _t("get_song api done")
         if info and "videoDetails" in info:
             details = info["videoDetails"]
             if details.get("videoId") == video_id:
@@ -1015,6 +1057,7 @@ def cmd_get_song(video_id: str):
 
     # Fallback: search + watch_playlist
     results = ytm.search(video_id, filter="songs", limit=5)
+    _t("search fallback done")
     song = None
     for r in results:
         if r.get("videoId") == video_id:
@@ -1022,6 +1065,7 @@ def cmd_get_song(video_id: str):
             break
     if song is None:
         watch = ytm.get_watch_playlist(videoId=video_id, limit=1)
+        _t("watch_playlist fallback done")
         if watch and "tracks" in watch and watch["tracks"]:
             song = watch["tracks"][0]
     if song is None:
@@ -1033,6 +1077,7 @@ def cmd_get_song(video_id: str):
 def cmd_get_album(browse_id: str):
     ytm = get_ytmusic(needs_auth=False)
     album = ytm.get_album(browse_id)
+    _t("ytm.get_album done")
     if not album:
         fail(f"Album not found: {browse_id}")
         return
@@ -1052,6 +1097,7 @@ def cmd_get_album(browse_id: str):
 def cmd_get_artist(browse_id: str):
     ytm = get_ytmusic(needs_auth=False)
     artist = ytm.get_artist(browse_id)
+    _t("ytm.get_artist done")
     if not artist:
         fail(f"Artist not found: {browse_id}")
         return
@@ -1062,6 +1108,7 @@ def cmd_get_artist(browse_id: str):
 def cmd_get_artist_albums(browse_id: str):
     ytm = get_ytmusic(needs_auth=False)
     artist = ytm.get_artist(browse_id)
+    _t("ytm.get_artist done")
     if not artist:
         fail(f"Artist not found: {browse_id}")
         return
@@ -1090,7 +1137,8 @@ def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = "
                 ok(result)
                 return
         except Exception as e:
-            print(f"[yt-dlp] Download failed: {e}", file=sys.stderr, flush=True)
+            if _TIMING:
+                print(f"[yt-dlp] Download failed: {e}", file=sys.stderr, flush=True)
 
     # Strategy 2: ytmusicapi authenticated download (fallback)
     try:
@@ -1099,7 +1147,8 @@ def cmd_download_track(video_id: str, quality: str = "FLAC", output_dir: str = "
             ok(result)
             return
     except Exception as e:
-        print(f"[ytmusicapi] Download failed: {e}", file=sys.stderr, flush=True)
+        if _TIMING:
+            print(f"[ytmusicapi] Download failed: {e}", file=sys.stderr, flush=True)
 
     fail("All download methods failed (yt-dlp failed, ytmusicapi failed or unavailable)")
 
@@ -1154,12 +1203,15 @@ def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
     cache_key = f"stream_{_cache_key(video_id, quality)}"
     cached = _load_cache(cache_key, ttl_seconds=1800)  # 30 min TTL
     if cached and cached.get("url"):
+        _t("cache hit: stream")
         ok(cached)
         return
 
+    _t("cache miss: stream")
     # Fast path: ytmusicapi authenticated call (no page scraping / JS execution)
     result = _get_stream_url_ytmusicapi(video_id, quality)
     if result and result.get("url"):
+        _t("ytmusicapi stream-url done")
         _save_cache(cache_key, result)
         ok(result)
         return
@@ -1167,6 +1219,7 @@ def cmd_get_stream_url(video_id: str, quality: str = "FLAC"):
     # Fallback: yt-dlp (slower — does page fetch + signature deciphering)
     result = _get_stream_url_ytdlp(video_id, quality)
     if result and result.get("url"):
+        _t("yt-dlp stream-url done")
         _save_cache(cache_key, result)
         ok(result)
         return
@@ -1182,6 +1235,7 @@ def cmd_check_auth():
     try:
         ytm = get_ytmusic(needs_auth=True)
         results = ytm.search("test", filter="songs", limit=1)
+        _t("check-auth done")
         ok({"authenticated": True, "searchWorks": len(results) > 0})
     except Exception as e:
         ok({"authenticated": False, "searchWorks": False, "reason": str(e)})
@@ -1207,10 +1261,12 @@ COMMANDS = {
 
 
 def main():
+    _t("script start")
     if len(sys.argv) < 2:
         fail("No command provided. Available: " + ", ".join(COMMANDS.keys()))
 
     _maybe_auto_update_packages()
+    _t("auto-update check done")
 
     cmd_name = sys.argv[1]
     if cmd_name not in COMMANDS:

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using octo_fiesta.Models.Domain;
 using octo_fiesta.Models.Settings;
 using octo_fiesta.Services.Common;
@@ -43,6 +44,8 @@ public class YouTubeMusicDownloadService : BaseDownloadService
     {
         var quality = _settings.Quality ?? "FLAC";
         cancellationToken.ThrowIfCancellationRequested();
+        var totalSw = Stopwatch.StartNew();
+        var bridgeSw = Stopwatch.StartNew();
 
         var tempDir = Path.Combine(Path.GetTempPath(), "octo-fiesta-ytm-dl", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
@@ -51,6 +54,7 @@ public class YouTubeMusicDownloadService : BaseDownloadService
         try
         {
             var downloadResult = await _bridge.DownloadTrackFileAsync(trackId, quality, tempDir);
+            bridgeSw.Stop();
 
             if (downloadResult == null || string.IsNullOrEmpty(downloadResult.Filepath))
             {
@@ -67,12 +71,14 @@ public class YouTubeMusicDownloadService : BaseDownloadService
                 "Downloaded track {TrackId} via yt-dlp: {Filepath} (codec={Codec}, bitrate={Bitrate})",
                 trackId, filePath, downloadResult.Codec, downloadResult.Bitrate);
 
+            var readSw = Stopwatch.StartNew();
             var memoryStream = new MemoryStream();
             using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 await fileStream.CopyToAsync(memoryStream, cancellationToken);
             }
             memoryStream.Position = 0;
+            readSw.Stop();
 
             var extension = YouTubeMusicQuality.MimeTypeToExtension(downloadResult.MimeType);
             var downloadedQuality = YouTubeMusicQuality.FromApiParams(downloadResult.MimeType, downloadResult.Bitrate);
@@ -83,16 +89,29 @@ public class YouTubeMusicDownloadService : BaseDownloadService
                 mp4Duration = downloadResult.DurationMs / 1000.0;
             }
 
+            if (_settings.VerboseTiming)
+            {
+                _logger.LogInformation(
+                    "[ytm-dl] track={TrackId} bridge={BridgeMs}ms read={ReadMs}ms total={TotalMs}ms bytes={Bytes}",
+                    trackId, bridgeSw.ElapsedMilliseconds, readSw.ElapsedMilliseconds, totalSw.ElapsedMilliseconds, memoryStream.Length);
+            }
+
             return new DownloadResult(memoryStream, extension, downloadedQuality, mp4Duration);
         }
         finally
         {
+            var cleanupSw = Stopwatch.StartNew();
             // Clean up downloaded file and temp directory
             if (filePath != null)
             {
                 try { File.Delete(filePath); } catch { /* best effort */ }
             }
             try { Directory.Delete(tempDir, false); } catch { /* best effort */ }
+            cleanupSw.Stop();
+            if (_settings.VerboseTiming)
+            {
+                _logger.LogInformation("[ytm-dl] track={TrackId} cleanup={CleanupMs}ms", trackId, cleanupSw.ElapsedMilliseconds);
+            }
         }
     }
 
