@@ -29,6 +29,7 @@ import time
 import hashlib
 import urllib.request
 import urllib.error
+from datetime import datetime
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlparse, unquote
 from typing import Optional
@@ -61,7 +62,6 @@ def _t(label: str):
     if not _TIMING:
         return
     now = time.time()
-    from datetime import datetime
     iso = datetime.now().isoformat(timespec="milliseconds")
     delta = int((now - _T_PREV) * 1000)
     _T_PREV = now
@@ -74,41 +74,60 @@ _AUTO_UPDATE_PACKAGES = ["yt-dlp", "yt-dlp-ejs"]
 def _maybe_auto_update_packages():
     """Throttled in-place upgrade of yt-dlp / yt-dlp-ejs in the running venv.
 
-    Runs at most once per YTMUSIC_AUTO_UPDATE_HOURS (default 24, 0 disables).
-    Upgrades happen in the venv of sys.executable and take effect on the next
-    invocation (already-imported modules are not reloaded).
+    Runs at most once per YTMUSIC_AUTO_UPDATE_HOURS (default 0/disabled).
+    Uses a cross-process lock file so concurrent bridge invocations don't
+    all run pip simultaneously.
     """
     try:
-        # Default to disabled (0) because pip upgrades can take 10-20 s and block
-        # every invocation. Users who want auto-updates can set e.g. 168 (weekly).
         interval_h = float(os.environ.get("YTMUSIC_AUTO_UPDATE_HOURS", "0"))
     except ValueError:
         interval_h = 0.0
+    _t(f"auto-update: interval_h={interval_h}")
     if interval_h <= 0:
+        _t("auto-update: disabled, skip")
         return
 
     state_dir = os.environ.get("YTMUSIC_UPDATE_STATE_DIR") or os.path.dirname(os.path.abspath(__file__))
     try:
         os.makedirs(state_dir, exist_ok=True)
     except OSError:
+        _t("auto-update: state-dir error")
         return
     marker = os.path.join(state_dir, ".ytmusic_last_update")
+    in_progress = os.path.join(state_dir, ".ytmusic_update_in_progress")
 
     try:
         if os.path.exists(marker):
             age_h = (time.time() - os.path.getmtime(marker)) / 3600.0
             if age_h < interval_h:
+                _t("auto-update: marker fresh, skip")
                 return
     except OSError:
+        _t("auto-update: marker check error")
         return
 
-    if _TIMING:
-        print("[auto-update] checking for yt-dlp / yt-dlp-ejs upgrades...", file=sys.stderr, flush=True)
+    # Cross-process lock: if another bridge process is already updating, skip
     try:
+        if os.path.exists(in_progress):
+            age_m = (time.time() - os.path.getmtime(in_progress)) / 60.0
+            if age_m < 10:
+                _t("auto-update: in-progress, skip")
+                return
+        with open(in_progress, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        _t("auto-update: lock file error")
+        return
+
+    try:
+        if _TIMING:
+            print("[auto-update] checking for yt-dlp / yt-dlp-ejs upgrades...", file=sys.stderr, flush=True)
+        _t("auto-update: pip start")
         proc = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--upgrade", *_AUTO_UPDATE_PACKAGES],
             capture_output=True, timeout=180,
         )
+        _t(f"auto-update: pip done rc={proc.returncode}")
         if proc.returncode == 0:
             try:
                 os.utime(marker, None)
@@ -122,6 +141,11 @@ def _maybe_auto_update_packages():
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         if _TIMING:
             print(f"[auto-update] skipped: {e}", file=sys.stderr, flush=True)
+    finally:
+        try:
+            os.remove(in_progress)
+        except OSError:
+            pass
 
 
 _YTM_ORIGIN = "https://music.youtube.com"
@@ -1266,6 +1290,7 @@ def main():
         fail("No command provided. Available: " + ", ".join(COMMANDS.keys()))
 
     _maybe_auto_update_packages()
+    _t("auto-update: function returned")
     _t("auto-update check done")
 
     cmd_name = sys.argv[1]
