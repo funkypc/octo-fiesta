@@ -111,8 +111,8 @@ services:
       - YouTubeMusic__IncludeUnavailable=${YTMUSIC_INCLUDE_UNAVAILABLE:-false}
       # Auto-upgrade yt-dlp / yt-dlp-ejs in the venv at most every N hours (0 disables, default: 0)
       - YouTubeMusic__AutoUpdateHours=${YTMUSIC_AUTO_UPDATE_HOURS:-0}
-      # Detailed timestamped timing logs (default: true)
-      - YouTubeMusic__VerboseTiming=${YTMUSIC_VERBOSE_TIMING:-true}
+      # Detailed timestamped timing logs (default: false)
+      - YouTubeMusic__VerboseTiming=${YTMUSIC_VERBOSE_TIMING:-false}
     volumes:
       - ${DOWNLOAD_PATH:-./downloads}:/app/downloads
       - ${YTMUSIC_COOKIE_FILE:-./ytmusic-cookies.json}:/app/ytmusic-cookies.json:ro

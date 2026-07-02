@@ -40,9 +40,9 @@ public class YouTubeMusicSettings
 
     /// <summary>
     /// Enable detailed timestamped timing logs for search/download.
-    /// Default: true
+    /// Default: false
     /// </summary>
-    public bool VerboseTiming { get; set; } = true;
+    public bool VerboseTiming { get; set; } = false;
 
     /// <summary>
     /// Auto-update interval for yt-dlp / yt-dlp-ejs in the Python venv, in hours.
