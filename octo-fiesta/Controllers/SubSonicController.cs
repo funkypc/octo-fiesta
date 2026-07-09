@@ -157,8 +157,20 @@ public class SubsonicController : ControllerBase
             return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted);
         }
 
-        // Always go through DownloadAndStreamAsync for external songs
-        // This ensures quality upgrade logic is applied
+        // Serve an already-owned copy from the library instead of re-downloading.
+        // Skipped when AutoUpgradeQuality is on so the download path can still
+        // upgrade a lower-quality local copy on play.
+        if (!_subsonicSettings.AutoUpgradeQuality)
+        {
+            var localSongId = await _localLibraryService.GetLocalIdForExternalSongAsync(provider!, externalId!);
+            if (!string.IsNullOrEmpty(localSongId))
+            {
+                parameters["id"] = localSongId;
+                return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted);
+            }
+        }
+
+        // Otherwise download from the provider and stream (quality upgrade logic applies)
         try
         {
             // Download phase: use only application-stopping token (NOT RequestAborted)
